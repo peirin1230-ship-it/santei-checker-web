@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>算定可否・併算定 一次判定支援ツール(静的版)</title>
+<style>
+ body { font-family: "Hiragino Sans", "Noto Sans JP", Meiryo, sans-serif;
+        margin: 1.5rem; max-width: 72rem; }
+ h1 { font-size: 1.3rem; }
+ fieldset { border: 1px solid #bbb; border-radius: 6px; margin-bottom: 1rem; }
+ label { display: block; margin-top: .6rem; font-weight: bold; }
+ .hint { color: #555; font-size: .85rem; font-weight: normal; }
+ textarea, input[type=text], input[type=month] { width: 100%; box-sizing: border-box; font-size: 1rem; }
+ button { font-size: 1.05rem; padding: .4rem 1.6rem; margin-top: .8rem; }
+ pre { background: #f6f6f6; border: 1px solid #ddd; border-radius: 6px;
+       padding: 1rem; white-space: pre-wrap; word-break: break-all; }
+ .warn { background: #fff2f2; border: 2px solid #c00; border-radius: 6px;
+         padding: .6rem 1rem; margin: .8rem 0; }
+ .ok { background: #f0fff0; border: 1px solid #2a2; border-radius: 6px;
+       padding: .6rem 1rem; margin: .8rem 0; }
+ .disclaimer { color: #900; font-size: .9rem; border-top: 1px solid #ccc;
+               margin-top: 1.5rem; padding-top: .6rem; }
+ .error { color: #c00; font-weight: bold; }
+ nav { margin: .8rem 0; }
+ nav a { margin-right: 1rem; cursor: pointer; text-decoration: underline; color: #06c; }
+ nav a.active { font-weight: bold; color: #000; text-decoration: none; }
+ table.results { border-collapse: collapse; width: 100%; }
+ table.results th, table.results td { border: 1px solid #ccc; padding: .3rem .5rem;
+   font-size: .95rem; text-align: left; }
+ table.results th { background: #f0f0f0; }
+ .expired { color: #c00; font-weight: bold; }
+ .tab { display: none; }
+ .tab.active { display: block; }
+ a.reflink { color: #06c; cursor: pointer; text-decoration: underline; }
+ #loading { color: #555; }
+</style>
+</head>
+<body>
+<h1>算定可否・併算定 一次判定支援ツール(静的版)</h1>
+
+<div id="setup">
+  <fieldset><legend>データの読み込み(初回のみ)</legend>
+  <p>このページ自体は公的データを含みません。院内で配布された
+  <b>santei_pages_data.zip</b> を選択してください。データはブラウザ内でのみ
+  処理され、外部には送信されません(次回からは自動で読み込まれます)。</p>
+  <input type="file" id="zipfile" accept=".zip">
+  <p id="loading"></p>
+  </fieldset>
+</div>
+
+<div id="app" style="display:none">
+<nav>
+  <a data-tab="check" class="active">判定</a>
+  <a data-tab="search">コード検索</a>
+  <a data-tab="ref">条文参照</a>
+  <a id="resetData" style="color:#999">データ入替</a>
+  <span id="dataInfo" class="hint"></span>
+</nav>
+
+<div id="tab-check" class="tab active">
+  <fieldset><legend>判定条件</legend>
+  <label>コード(診療行為・医薬品・傷病名を空白/改行/カンマ区切りで)
+    <span class="hint">例: 150267310 150140110 / 医薬品+傷病名で適応チェック。先頭ゼロは省略しない</span></label>
+  <textarea id="codes" rows="3" placeholder="150267310 150140110"></textarea>
+  <label>診療年月</label>
+  <input type="month" id="ym" value="2026-07">
+  <label>数量(任意・医薬品の投与量照合) <span class="hint">「医薬品コード=数量」を空白区切りで</span></label>
+  <textarea id="ryo" rows="1"></textarea>
+  <label>投与日数(任意) <span class="hint">「医薬品コード=日数」</span></label>
+  <textarea id="nissu" rows="1"></textarea>
+  <button id="runCheck">一次判定を実行</button>
+  </fieldset>
+  <div id="checkBanners"></div>
+  <div id="checkResult"></div>
+</div>
+
+<div id="tab-search" class="tab">
+  <fieldset><legend>コード検索(名称・コード・区分番号のどれでも)</legend>
+  <label>検索語 <span class="hint">例: 初診料 / K597 / 111000110 / ガスター / 7桁の傷病名コード</span></label>
+  <input type="text" id="searchQ">
+  <button id="runSearch">検索</button>
+  </fieldset>
+  <div id="selPanel"></div>
+  <div id="searchResult"></div>
+</div>
+
+<div id="tab-ref" class="tab">
+  <fieldset><legend>条文参照(区分番号から留意事項通知・告示を表示)</legend>
+  <label>区分番号 <span class="hint">例: A000, B001-2, K597</span></label>
+  <input type="text" id="refQ">
+  <button id="runRef">表示</button>
+  </fieldset>
+  <div id="refResult"></div>
+</div>
+</div>
+
+<p class="disclaimer">※テーブルに該当がないことは併算定可を意味しません(電子点数表には意図的に収載されていない
+ルールがあります)。<br>
+※本ページは院内利用限定です。データファイル(zip)を院外に配布しないでください。</p>
+
+<script src="./vendor/jszip.min.js"></script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

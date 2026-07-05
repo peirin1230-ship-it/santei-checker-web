@@ -1,0 +1,47 @@
+# GitHub Pages へ静的版(webstatic/)のみをデプロイする。
+#
+# 重要: Pages サイトはリポジトリがPrivateでも常に公開になる。
+# そのため公的データ(dist/santei_pages_data.zip・data/・db/・docs/)は
+# 一切含めず、プログラムだけを配信する。データは利用者が院内配布のzipを
+# ブラウザで読み込む(webstatic/index.html 参照)。
+#
+# 有効化: configure-pages(enablement)が自動で行う。権限エラー等で失敗する場合は
+# リポジトリの Settings → Pages → Source を "GitHub Actions" にする。
+name: deploy-pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["webstatic/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: データ非同梱の確認(公開ガード)
+        run: |
+          if find webstatic \( -name '*.zip' -o -name '*.csv' -o -name '*.duckdb' \) | grep .; then
+            echo '::error::公的データらしきファイルが webstatic/ に含まれています'; exit 1
+          fi
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: webstatic
+      - id: deployment
+        uses: actions/deploy-pages@v4
