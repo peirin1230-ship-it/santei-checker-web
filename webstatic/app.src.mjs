@@ -79,10 +79,12 @@ async function idbGet(key) {
 }
 async function idbSet(key, val) {
   const db = await idb();
-  return new Promise((ok) => {
+  return new Promise((ok, ng) => {
     const tx = db.transaction("files", "readwrite");
     tx.objectStore("files").put(val, key);
     tx.oncomplete = () => ok();
+    tx.onerror = tx.onabort =
+      () => ng(tx.error ?? new Error("IndexedDBへの書き込みに失敗"));
   });
 }
 async function idbDel(key) {
@@ -841,23 +843,38 @@ $("refQ").addEventListener("keydown", (e) => { if (e.key === "Enter") $("runRef"
 $("zipfile").addEventListener("change", async (ev) => {
   const f = ev.target.files[0];
   if (!f) return;
+  let buf;
   try {
-    const buf = await f.arrayBuffer();
+    buf = await f.arrayBuffer();
     await initDb(buf);
-    await idbSet("dataZip", buf);
   } catch (e) {
     $("loading").innerHTML = `<span class="error">読み込み失敗: ${esc(e.message)}</span>`;
+    return;
+  }
+  try {
+    await idbSet("dataZip", buf);
+  } catch (e) {
+    $("dataInfo").textContent +=
+      ` ※ブラウザにデータを保存できませんでした(${e.message})。次回もzipの選択が必要です。` +
+      "シークレットウィンドウや「終了時にサイトデータを削除」設定が原因のことがあります";
   }
 });
 
 (async () => {
-  try {
-    const cached = await idbGet("dataZip");
-    if (cached) {
-      $("loading").textContent = "保存済みデータを読み込み中…";
+  // 追い出し(ブラウザによる自動削除)への耐性を上げる。拒否されても続行
+  try { await navigator.storage?.persist?.(); } catch { /* 任意機能 */ }
+  let cached = null;
+  try { cached = await idbGet("dataZip"); } catch { /* 破損時は初回扱い */ }
+  if (cached) {
+    try {
+      $("loading").textContent = "保存済みデータを読み込み中…(初期化に数秒〜数十秒かかります)";
       await initDb(cached);
+      return;
+    } catch (e) {
+      $("loading").innerHTML = `<span class="error">保存済みデータの読み込みに失敗しました。zipを選択し直してください(${esc(e.message)})</span>`;
     }
-  } catch (e) {
-    $("loading").innerHTML = `<span class="error">保存済みデータの読み込みに失敗しました。zipを選択し直してください(${esc(e.message)})</span>`;
+  } else {
+    $("loading").textContent = "";
   }
+  $("pickerBlock").style.display = "block";
 })();

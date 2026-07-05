@@ -41,12 +41,14 @@
 <h1>算定可否・併算定 一次判定支援ツール(静的版)</h1>
 
 <div id="setup">
-  <fieldset><legend>データの読み込み(初回のみ)</legend>
+  <fieldset><legend>データの読み込み</legend>
+  <div id="pickerBlock" style="display:none">
   <p>このページ自体は公的データを含みません。院内で配布された
   <b>santei_pages_data.zip</b> を選択してください。データはブラウザ内でのみ
   処理され、外部には送信されません(次回からは自動で読み込まれます)。</p>
   <input type="file" id="zipfile" accept=".zip">
-  <p id="loading"></p>
+  </div>
+  <p id="loading">保存済みデータを確認中…</p>
   </fieldset>
 </div>
 

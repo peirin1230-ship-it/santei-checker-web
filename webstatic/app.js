@@ -12344,10 +12344,11 @@ async function idbGet(key) {
 }
 async function idbSet(key, val) {
   const db = await idb();
-  return new Promise((ok) => {
+  return new Promise((ok, ng) => {
     const tx = db.transaction("files", "readwrite");
     tx.objectStore("files").put(val, key);
     tx.oncomplete = () => ok();
+    tx.onerror = tx.onabort = () => ng(tx.error ?? new Error("IndexedDB\u3078\u306E\u66F8\u304D\u8FBC\u307F\u306B\u5931\u6557"));
   });
 }
 async function idbDel(key) {
@@ -13211,22 +13212,40 @@ $2("refQ").addEventListener("keydown", (e) => {
 $2("zipfile").addEventListener("change", async (ev) => {
   const f = ev.target.files[0];
   if (!f) return;
+  let buf;
   try {
-    const buf = await f.arrayBuffer();
+    buf = await f.arrayBuffer();
     await initDb(buf);
-    await idbSet("dataZip", buf);
   } catch (e) {
     $2("loading").innerHTML = `<span class="error">\u8AAD\u307F\u8FBC\u307F\u5931\u6557: ${esc(e.message)}</span>`;
+    return;
+  }
+  try {
+    await idbSet("dataZip", buf);
+  } catch (e) {
+    $2("dataInfo").textContent += ` \u203B\u30D6\u30E9\u30A6\u30B6\u306B\u30C7\u30FC\u30BF\u3092\u4FDD\u5B58\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F(${e.message})\u3002\u6B21\u56DE\u3082zip\u306E\u9078\u629E\u304C\u5FC5\u8981\u3067\u3059\u3002\u30B7\u30FC\u30AF\u30EC\u30C3\u30C8\u30A6\u30A3\u30F3\u30C9\u30A6\u3084\u300C\u7D42\u4E86\u6642\u306B\u30B5\u30A4\u30C8\u30C7\u30FC\u30BF\u3092\u524A\u9664\u300D\u8A2D\u5B9A\u304C\u539F\u56E0\u306E\u3053\u3068\u304C\u3042\u308A\u307E\u3059`;
   }
 });
 (async () => {
   try {
-    const cached = await idbGet("dataZip");
-    if (cached) {
-      $2("loading").textContent = "\u4FDD\u5B58\u6E08\u307F\u30C7\u30FC\u30BF\u3092\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026";
-      await initDb(cached);
-    }
-  } catch (e) {
-    $2("loading").innerHTML = `<span class="error">\u4FDD\u5B58\u6E08\u307F\u30C7\u30FC\u30BF\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002zip\u3092\u9078\u629E\u3057\u76F4\u3057\u3066\u304F\u3060\u3055\u3044(${esc(e.message)})</span>`;
+    await navigator.storage?.persist?.();
+  } catch {
   }
+  let cached = null;
+  try {
+    cached = await idbGet("dataZip");
+  } catch {
+  }
+  if (cached) {
+    try {
+      $2("loading").textContent = "\u4FDD\u5B58\u6E08\u307F\u30C7\u30FC\u30BF\u3092\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026(\u521D\u671F\u5316\u306B\u6570\u79D2\u301C\u6570\u5341\u79D2\u304B\u304B\u308A\u307E\u3059)";
+      await initDb(cached);
+      return;
+    } catch (e) {
+      $2("loading").innerHTML = `<span class="error">\u4FDD\u5B58\u6E08\u307F\u30C7\u30FC\u30BF\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002zip\u3092\u9078\u629E\u3057\u76F4\u3057\u3066\u304F\u3060\u3055\u3044(${esc(e.message)})</span>`;
+    }
+  } else {
+    $2("loading").textContent = "";
+  }
+  $2("pickerBlock").style.display = "block";
 })();
