@@ -246,10 +246,10 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
           .map((r) => r.haihan_kubun === "1" ? r.shinryokoi_shoryaku_meisho_1 : r.shinryokoi_shoryaku_meisho_2))].sort();
         let detail = kubuns.map((k) => `区分${k}(${HAIHAN_KUBUN[k] ?? "不明"})`).join("・");
         if (santei.length) detail += ` → 算定される側: ${santei.join("、")}`;
-        detail += `/特例条件=${tokurei ? "1あり" : "0"}`;
+        detail += "/" + (tokurei ? "特例条件=1のヒットあり(要通知確認)" : "特例条件=0(特別な条件なし)");
         pair.push({kind: "haihan", title: `[背反] ${joken}テーブル`, detail, tokurei,
           table: `${table}(${edition})`,
-          evid: rws.map((r) => `①${r.shinryokoi_code_1} ${r.shinryokoi_shoryaku_meisho_1} × ②${r.shinryokoi_code_2} ${r.shinryokoi_shoryaku_meisho_2} 背反区分=${r.haihan_kubun} 特例条件=${r.tokurei_joken}`),
+          evid: rws.map((r) => `①${r.shinryokoi_code_1} ${r.shinryokoi_shoryaku_meisho_1} × ②${r.shinryokoi_code_2} ${r.shinryokoi_shoryaku_meisho_2} 背反区分=${r.haihan_kubun}(${HAIHAN_KUBUN[r.haihan_kubun] ?? "不明"})/${tokureiLabel(r.tokurei_joken)}`),
           refs: [infos[a].kubun, infos[b].kubun].filter(Boolean)});
       }
       for (const [p, q_] of [[a, b], [b, a]]) {  // 包括: p(親)がq_(子)を包括するか
@@ -275,9 +275,9 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
             if (!refs.includes(gref)) refs.push(gref);
           }
           hits.push({kind: "hokatsu", title: "[包括] 包括・被包括テーブル",
-            detail: `「${infos[q_].name ?? q_}」は「${infos[p].name ?? p}」に包括され算定不可(包括単位: ${HOKATSU_TANI[tani] ?? `単位コード${tani}(不明)`})/特例条件=${tokurei ? "1あり" : "0"}`,
+            detail: `「${infos[q_].name ?? q_}」は「${infos[p].name ?? p}」に包括され算定不可(包括単位: ${HOKATSU_TANI[tani] ?? `単位コード${tani}(不明)`})/${tokurei ? "特例条件=1のヒットあり(要通知確認)" : "特例条件=0(特別な条件なし)"}`,
             tokurei, table: `hokatsu(${edition})`,
-            evid: rws.map((r) => `グループ${g}(補助マスター: ${p} ${infos[p].name ?? ""} 包括単位=${tani}) に ${r.shinryokoi_code} ${r.shinryokoi_shoryaku_meisho} を収載 特例条件=${r.tokurei_joken}`),
+            evid: rws.map((r) => `グループ${g}(補助マスター: ${p} ${infos[p].name ?? ""} 包括単位=${tani}) に ${r.shinryokoi_code} ${r.shinryokoi_shoryaku_meisho} を収載/${tokureiLabel(r.tokurei_joken)}`),
             refs});
           pair.push(hits[hits.length - 1]); hits.pop();
         }
@@ -441,18 +441,48 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
     profile = await buildProfile(codes[0], infos[codes[0]], edition, ym, ms, me);
   }
 
-  // 選択式コメント必須情報(テーブル投入済みのzipの場合のみ。無ければ表示なし)
+  // 選択式コメント(摘要欄記載事項)の照合(テーブル投入済みのzipの場合のみ)
   const commentYoken = [];
   try {
-    for (const c of shinryokoi) {
-      const rws = await rows(`
-        SELECT comment_code, comment_bunrei, kisai_jiko, joken
-        FROM sentakushiki_comment
-        WHERE edition=? AND shinryokoi_code=?
-          AND (shinsetsu_ymd IS NULL OR shinsetsu_ymd<=?)
-          AND (haishi_ymd IS NULL OR haishi_ymd>=?)
-        ORDER BY comment_code`, [edition, c, me, ms]);
-      if (rws.length) commentYoken.push({code: c, name: infos[c].name, rows: rws,
+    for (const c of codes) {
+      const info = infos[c];
+      let rws = [], shogo = null;
+      if (info.kind === "診療行為" && info.kubun) {
+        // 連結表記(K5971)のみ基底(K597)へ縮退(checker._kubun_base_candidates と同一)
+        const m = /^([A-Z])(\d{3})(.*)$/.exec(info.kubun);
+        if (m) {
+          const base = (m[3] === "" || m[3].startsWith("-")) ? info.kubun : m[1] + m[2];
+          rws = await rows(`
+            SELECT bessyo, koban, kubun_hyoki, meisho, kisai_jiko,
+                   comment_code, comment_bunrei, kami_only
+            FROM sentakushiki_comment
+            WHERE edition=? AND bessyo IN ('I','III') AND kubun_base=?
+            ORDER BY bessyo, len(koban), koban`, [edition, base]);
+          if (rws.length) shogo = `区分 ${base} で照合(同一区分の別項目を含む)`;
+        }
+      } else if (info.kind === "医薬品" && info.name) {
+        rws = await rows(`
+          SELECT bessyo, koban, kubun_hyoki, meisho, kisai_jiko,
+                 comment_code, comment_bunrei, kami_only
+          FROM sentakushiki_comment
+          WHERE edition=? AND bessyo='II'
+            AND (meisho = ? OR ? LIKE meisho || '%' OR meisho LIKE ? || '%')
+          ORDER BY len(koban), koban`, [edition, info.name, info.name, info.name]);
+        if (rws.length) shogo = "医薬品名称で照合";
+      }
+      if (!rws.length) continue;
+      const blocks = [];
+      for (const r of rws) {
+        const key = `${r.bessyo}|${r.koban}|${r.kisai_jiko}`;
+        if (!blocks.length || blocks[blocks.length - 1].key !== key) {
+          blocks.push({key, bessyo: r.bessyo, koban: r.koban,
+            kubun_hyoki: r.kubun_hyoki, meisho: r.meisho,
+            kisai_jiko: r.kisai_jiko, comments: []});
+        }
+        blocks[blocks.length - 1].comments.push(
+          {code: r.comment_code, bunrei: r.comment_bunrei, kami: r.kami_only});
+      }
+      commentYoken.push({code: c, name: info.name, shogo, blocks,
         table: `sentakushiki_comment(${edition})`});
     }
   } catch { /* テーブル未投入のzip */ }
@@ -462,6 +492,13 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
 }
 
 const PROFILE_EXAMPLES = 10;
+const PROFILE_KUBUN_IMI = {
+  "1": "自コード側を算定(相手側が算定不可)",
+  "2": "相手側を算定(自コードが算定不可)",
+  "3": "いずれか一方を算定",
+};
+const tokureiLabel = (t) => t === "1"
+  ? "特例条件=1(通知に特別な条件あり・原文確認必須)" : "特例条件=0(特別な条件なし)";
 
 async function buildProfile(code, info, edition, ym, ms, me) {
   const p = {code, kind: info.kind, haihanAite: [], hokatsuOya: [], hokatsuOyaTotal: 0,
@@ -662,17 +699,23 @@ async function renderCheck(R) {
   }
 
   if (R.commentYoken.length) {
-    out.push("", "--- 選択式コメント(摘要欄記載事項・要記載) ---");
+    out.push("", "--- 選択式コメント(摘要欄記載事項・記載要領 別表Ⅰ〜Ⅲ) ---");
     for (const cy of R.commentYoken) {
-      out.push(`  ${esc(cy.code)} ${esc(cy.name ?? "")}: 記載が必要なコメント ${cy.rows.length}件`);
-      for (const r of cy.rows) {
-        const parts = [`コメントコード=${esc(r.comment_code)}`];
-        if (r.comment_bunrei) parts.push(esc(r.comment_bunrei));
-        if (r.joken) parts.push(`条件: ${esc(r.joken)}`);
-        out.push(`    - ${parts.join("/")}`);
+      out.push(`  ${esc(cy.code)} ${esc(cy.name ?? "")}(${esc(cy.shogo)} / 該当 ${cy.blocks.length}ブロック):`);
+      for (const b of cy.blocks) {
+        let head = `[別表${b.bessyo} 項番${b.koban}]`;
+        if (b.kubun_hyoki) head += ` ${b.kubun_hyoki}`;
+        if (b.meisho) head += ` ${b.meisho}`;
+        out.push(`    ${esc(head)}`);
+        let jiko = (b.kisai_jiko ?? "").split(/\s+/).join(" ");
+        if (jiko.length > 120) jiko = jiko.slice(0, 120) + "…(続きは別表原文)";
+        out.push(`      記載事項: ${esc(jiko)}`);
+        for (const c of b.comments)
+          out.push(`      - ${esc(c.code)} ${esc(c.bunrei)}${c.kami ? "(紙レセのみ)" : ""}`);
       }
-      out.push(`    根拠: ${esc(cy.table)}(記載要領別表I相当。記載要領原文も確認)`);
+      out.push(`    根拠: ${esc(cy.table)}`);
     }
+    out.push("  ※区分番号・名称単位の照合のため同一区分の別項目も表示されます。名称・記載事項で自らの診療行為に該当するか確認してください。該当が無いこと=記載不要を意味しません(記載要領原文で確認)。");
   }
 
   if (R.profile) renderProfile(out, R);
@@ -860,7 +903,7 @@ function renderProfile(out, R) {
         const tk = h.tokurei ? `、特例条件=1が${h.tokurei}件` : "";
         out.push(`  ${esc(h.joken)}: ${h.total}件(${parts.join("/")}${tk})`);
         for (const e of h.examples)
-          out.push(`    - ${esc(e.code)} ${esc(e.name)}(区分${esc(e.kubun)})${e.tokurei === "1" ? "【要通知確認】" : ""}`);
+          out.push(`    - ${esc(e.code)} ${esc(e.name)} → ${esc(PROFILE_KUBUN_IMI[e.kubun] ?? "不明")}${e.tokurei === "1" ? "【要通知確認】" : ""}`);
         if (h.total > h.examples.length)
           out.push(`    …ほか${h.total - h.examples.length}件(根拠: ${esc(h.table)})`);
       }
