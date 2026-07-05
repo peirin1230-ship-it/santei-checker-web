@@ -434,8 +434,167 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
       });
     }
   }
+  // 単一コード入力時は単体プロファイル(相手一覧・逆引き)を付す(checker.build_profileの移植)
+  let profile = null;
+  if (codes.length === 1 && infos[codes[0]].found
+      && (infos[codes[0]].kind === "診療行為" || infos[codes[0]].kind === "医薬品")) {
+    profile = await buildProfile(codes[0], infos[codes[0]], edition, ym, ms, me);
+  }
+
+  // 選択式コメント必須情報(テーブル投入済みのzipの場合のみ。無ければ表示なし)
+  const commentYoken = [];
+  try {
+    for (const c of shinryokoi) {
+      const rws = await rows(`
+        SELECT comment_code, comment_bunrei, kisai_jiko, joken
+        FROM sentakushiki_comment
+        WHERE edition=? AND shinryokoi_code=?
+          AND (shinsetsu_ymd IS NULL OR shinsetsu_ymd<=?)
+          AND (haishi_ymd IS NULL OR haishi_ymd>=?)
+        ORDER BY comment_code`, [edition, c, me, ms]);
+      if (rws.length) commentYoken.push({code: c, name: infos[c].name, rows: rws,
+        table: `sentakushiki_comment(${edition})`});
+    }
+  } catch { /* テーブル未投入のzip */ }
+
   return {ym, edition, codes, infos, hits, notListed, kaisu, tekiou, heiyo,
-    jireiSummary, drugs, diseases, shinryokoi};
+    jireiSummary, drugs, diseases, shinryokoi, profile, commentYoken};
+}
+
+const PROFILE_EXAMPLES = 10;
+
+async function buildProfile(code, info, edition, ym, ms, me) {
+  const p = {code, kind: info.kind, haihanAite: [], hokatsuOya: [], hokatsuOyaTotal: 0,
+    hokatsuKo: [], tekiouTotal: null, tekiouExamples: [], tekiouTable: null,
+    tekiouMujoken: 0, kinkiTotal: 0, kinkiExamples: [], heiyoTotal: 0, heiyoExamples: []};
+  if (info.kind === "診療行為") {
+    for (const [table, joken] of HAIHAN_TABLES) {
+      const agg = await rows(`
+        SELECT haihan_kubun, count(*) AS n,
+               sum(CASE WHEN tokurei_joken='1' THEN 1 ELSE 0 END) AS t
+        FROM ${table} WHERE edition=? AND shinryokoi_code_1=?
+          AND shinsetsu_ymd<=? AND haishi_ymd>=? GROUP BY haihan_kubun`,
+        [edition, code, me, ms]);
+      if (!agg.length) continue;
+      const examples = await rows(`
+        SELECT shinryokoi_code_2 AS code, shinryokoi_shoryaku_meisho_2 AS name,
+               haihan_kubun AS kubun, tokurei_joken AS tokurei
+        FROM ${table} WHERE edition=? AND shinryokoi_code_1=?
+          AND shinsetsu_ymd<=? AND haishi_ymd>=?
+        ORDER BY shinryokoi_code_2 LIMIT ${PROFILE_EXAMPLES}`, [edition, code, me, ms]);
+      const kubunCounts = {};
+      for (const r of agg) kubunCounts[r.haihan_kubun] = Number(r.n);
+      p.haihanAite.push({table: `${table}(${edition})`, joken,
+        total: agg.reduce((s, r) => s + Number(r.n), 0), kubunCounts,
+        tokurei: agg.reduce((s, r) => s + Number(r.t), 0), examples});
+    }
+    const oyaWhere = `
+      FROM hokatsu h JOIN hojo_master m ON m.edition = h.edition
+       AND (m.group_bango_1 = h.group_bango OR m.group_bango_2 = h.group_bango
+            OR m.group_bango_3 = h.group_bango)
+      WHERE h.edition=? AND h.shinryokoi_code=?
+        AND h.shinsetsu_ymd<=? AND h.haishi_ymd>=?
+        AND m.shinsetsu_ymd<=? AND m.haishi_ymd>=?`;
+    const oyaParams = [edition, code, me, ms, me, ms];
+    p.hokatsuOyaTotal = Number((await rows(`SELECT count(*) AS n ${oyaWhere}`, oyaParams))[0].n);
+    p.hokatsuOya = await rows(`
+      SELECT m.shinryokoi_code AS oya_code, m.shinryokoi_shoryaku_meisho AS oya_name,
+             h.group_bango AS grp, h.tokurei_joken AS tokurei,
+             CASE WHEN m.group_bango_1 = h.group_bango THEN m.hokatsu_tani_1
+                  WHEN m.group_bango_2 = h.group_bango THEN m.hokatsu_tani_2
+                  ELSE m.hokatsu_tani_3 END AS tani
+      ${oyaWhere} ORDER BY m.shinryokoi_code LIMIT ${PROFILE_EXAMPLES}`, oyaParams);
+    const hojo = await rows(`
+      SELECT hokatsu_tani_1, group_bango_1, hokatsu_tani_2, group_bango_2,
+             hokatsu_tani_3, group_bango_3
+      FROM hojo_master WHERE edition=? AND shinryokoi_code=?
+        AND shinsetsu_ymd<=? AND haishi_ymd>=?`, [edition, code, me, ms]);
+    for (const h of hojo.slice(0, 1)) {
+      for (const i2 of [1, 2, 3]) {
+        const g = h[`group_bango_${i2}`];
+        if (!g || g === "0") continue;
+        const agg = await rows(`
+          SELECT count(*) AS n, sum(CASE WHEN tokurei_joken='1' THEN 1 ELSE 0 END) AS t
+          FROM hokatsu WHERE edition=? AND group_bango=?
+            AND shinsetsu_ymd<=? AND haishi_ymd>=?`, [edition, g, me, ms]);
+        if (!agg.length || !Number(agg[0].n)) continue;
+        const examples = await rows(`
+          SELECT shinryokoi_code AS code, shinryokoi_shoryaku_meisho AS name,
+                 tokurei_joken AS tokurei
+          FROM hokatsu WHERE edition=? AND group_bango=?
+            AND shinsetsu_ymd<=? AND haishi_ymd>=?
+          ORDER BY shinryokoi_code LIMIT ${PROFILE_EXAMPLES}`, [edition, g, me, ms]);
+        const tani = h[`hokatsu_tani_${i2}`];
+        p.hokatsuKo.push({grp: g, tani: HOKATSU_TANI[tani] ?? `単位コード${tani}(不明)`,
+          total: Number(agg[0].n), tokurei: Number(agg[0].t ?? 0), examples});
+      }
+    }
+    if (ckEdition) {
+      p.tekiouTable = `checkmaster_si_shobyo(${ckEdition})`;
+      p.tekiouTotal = Number((await rows(`
+        SELECT count(DISTINCT shobyomei_code) AS n FROM checkmaster_si_shobyo
+        WHERE edition=? AND shinryokoi_code=? AND henko_kubun NOT IN ('1','9')
+          AND shobyomei_code <> '0000000'`, [ckEdition, code]))[0].n);
+      p.tekiouMujoken = Number((await rows(`
+        SELECT count(*) AS n FROM checkmaster_si_shobyo
+        WHERE edition=? AND shinryokoi_code=? AND henko_kubun NOT IN ('1','9')
+          AND shobyomei_code = '0000000'`, [ckEdition, code]))[0].n);
+      p.tekiouExamples = await rows(`
+        SELECT DISTINCT s.shobyomei_code AS code, b.shobyomei_kihon_meisho AS name
+        FROM checkmaster_si_shobyo s
+        LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = s.shobyomei_code
+        WHERE s.edition=? AND s.shinryokoi_code=? AND s.henko_kubun NOT IN ('1','9')
+          AND s.shobyomei_code <> '0000000'
+        ORDER BY s.shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+    }
+    return p;
+  }
+  if (info.kind === "医薬品" && ckEdition) {
+    const iyEdition = editionFor(ym, "iyakuhin");
+    p.tekiouTable = `checkmaster_iy_tekio(${ckEdition})`;
+    p.tekiouTotal = Number((await rows(`
+      SELECT count(DISTINCT shobyomei_code) AS n FROM checkmaster_iy_tekio
+      WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')
+        AND shobyomei_code <> '0000000'`, [ckEdition, code]))[0].n);
+    p.tekiouMujoken = Number((await rows(`
+      SELECT count(*) AS n FROM checkmaster_iy_tekio
+      WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')
+        AND shobyomei_code = '0000000'`, [ckEdition, code]))[0].n);
+    p.tekiouExamples = await rows(`
+      SELECT DISTINCT t.shobyomei_code AS code, b.shobyomei_kihon_meisho AS name
+      FROM checkmaster_iy_tekio t
+      LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = t.shobyomei_code
+      WHERE t.edition=? AND t.iyakuhin_code=? AND t.henko_kubun NOT IN ('1','9')
+        AND t.shobyomei_code <> '0000000'
+      ORDER BY t.shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+    p.kinkiTotal = Number((await rows(`
+      SELECT count(DISTINCT kinki_shobyomei_code) AS n FROM checkmaster_iy_shobyokinki
+      WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')`,
+      [ckEdition, code]))[0].n);
+    p.kinkiExamples = await rows(`
+      SELECT DISTINCT k.kinki_shobyomei_code AS code, b.shobyomei_kihon_meisho AS name
+      FROM checkmaster_iy_shobyokinki k
+      LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = k.kinki_shobyomei_code
+      WHERE k.edition=? AND k.iyakuhin_code=? AND k.henko_kubun NOT IN ('1','9')
+      ORDER BY k.kinki_shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+    p.heiyoTotal = Number((await rows(`
+      SELECT count(DISTINCT CASE WHEN iyakuhin_code_l=? THEN iyakuhin_code_r
+                                 ELSE iyakuhin_code_l END) AS n
+      FROM checkmaster_iy_heiyokinki
+      WHERE edition=? AND (iyakuhin_code_l=? OR iyakuhin_code_r=?)
+        AND henko_kubun NOT IN ('1','9')`, [code, ckEdition, code, code]))[0].n);
+    p.heiyoExamples = await rows(`
+      SELECT DISTINCT aite AS code, m.kanji_meisho AS name FROM (
+        SELECT CASE WHEN iyakuhin_code_l=? THEN iyakuhin_code_r
+                    ELSE iyakuhin_code_l END AS aite
+        FROM checkmaster_iy_heiyokinki
+        WHERE edition=? AND (iyakuhin_code_l=? OR iyakuhin_code_r=?)
+          AND henko_kubun NOT IN ('1','9')
+      ) LEFT JOIN master_iyakuhin m ON m.edition=? AND m.iyakuhin_code = aite
+      ORDER BY aite LIMIT ${PROFILE_EXAMPLES}`,
+      [code, ckEdition, code, code, iyEdition]);
+  }
+  return p;
 }
 
 /* ---------- 表示(report.py の移植) ---------- */
@@ -501,6 +660,22 @@ async function renderCheck(R) {
       out.push(`      下限年齢=${esc(i.kagen)}/上限年齢=${esc(i.jogen)}(特殊値は仕様説明書参照)`);
     if (i.shisetsu.length) out.push(`      施設基準コード=${esc(i.shisetsu.join(","))}(届出要否は施設基準告示・届出コード一覧で確認)`);
   }
+
+  if (R.commentYoken.length) {
+    out.push("", "--- 選択式コメント(摘要欄記載事項・要記載) ---");
+    for (const cy of R.commentYoken) {
+      out.push(`  ${esc(cy.code)} ${esc(cy.name ?? "")}: 記載が必要なコメント ${cy.rows.length}件`);
+      for (const r of cy.rows) {
+        const parts = [`コメントコード=${esc(r.comment_code)}`];
+        if (r.comment_bunrei) parts.push(esc(r.comment_bunrei));
+        if (r.joken) parts.push(`条件: ${esc(r.joken)}`);
+        out.push(`    - ${parts.join("/")}`);
+      }
+      out.push(`    根拠: ${esc(cy.table)}(記載要領別表I相当。記載要領原文も確認)`);
+    }
+  }
+
+  if (R.profile) renderProfile(out, R);
 
   if (R.shinryokoi.length >= 2) {
     out.push("", "--- 併算定判定(背反・包括) ---");
@@ -656,6 +831,74 @@ async function renderCheck(R) {
   }
   out.push("--- 注意(固定表示) ---", esc(UNLISTED_RULES_NOTE));
   return {banners, html: out.join("\n")};
+}
+
+function renderProfile(out, R) {
+  const p = R.profile;
+  const info = R.infos[p.code];
+  const tekiouLines = () => {
+    if (p.tekiouTotal) {
+      out.push(`  収載 ${p.tekiouTotal}件(性別・年齢・入外等の条件付きを含む):`);
+      for (const e of p.tekiouExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(名称不明)")}`);
+      if (p.tekiouTotal > p.tekiouExamples.length)
+        out.push(`    …ほか${p.tekiouTotal - p.tekiouExamples.length}件(傷病名コードを併記して判定すると個別照合できます)`);
+    } else if (p.tekiouMujoken) {
+      out.push(`  傷病名を条件としない行のみ収載(${p.tekiouMujoken}行・投与量/日数チェック用) → 傷病名別の適応一覧は収載なし`);
+    } else {
+      out.push("  チェックマスタに収載なし → 適応判定不能(不明)");
+    }
+  };
+  out.push("", `--- 単体プロファイル: ${esc(p.code)} ${esc(info.name ?? "")} ---`);
+  if (p.kind === "診療行為") {
+    out.push("■ 背反相手(このコードと併算定調整があるテーブル収載分):");
+    if (p.haihanAite.length) {
+      for (const h of p.haihanAite) {
+        const parts = [];
+        if (h.kubunCounts["1"]) parts.push(`自コード側を算定=${h.kubunCounts["1"]}件`);
+        if (h.kubunCounts["2"]) parts.push(`相手側を算定(自コードが算定不可)=${h.kubunCounts["2"]}件`);
+        if (h.kubunCounts["3"]) parts.push(`いずれか一方=${h.kubunCounts["3"]}件`);
+        const tk = h.tokurei ? `、特例条件=1が${h.tokurei}件` : "";
+        out.push(`  ${esc(h.joken)}: ${h.total}件(${parts.join("/")}${tk})`);
+        for (const e of h.examples)
+          out.push(`    - ${esc(e.code)} ${esc(e.name)}(区分${esc(e.kubun)})${e.tokurei === "1" ? "【要通知確認】" : ""}`);
+        if (h.total > h.examples.length)
+          out.push(`    …ほか${h.total - h.examples.length}件(根拠: ${esc(h.table)})`);
+      }
+    } else {
+      out.push("  4テーブルとも収載なし(未収載パターンの可能性あり。併算定可の意味ではない)");
+    }
+    out.push("■ 包括関係:");
+    if (p.hokatsuOyaTotal) {
+      out.push(`  このコードを包括する項目(親・算定時にこのコードが包括される): ${p.hokatsuOyaTotal}件`);
+      for (const o of p.hokatsuOya)
+        out.push(`    - ${esc(o.oya_code)} ${esc(o.oya_name)}(包括単位: ${esc(HOKATSU_TANI[o.tani] ?? `単位コード${o.tani}`)})[グループ${esc(o.grp)}]${o.tokurei === "1" ? "【要通知確認】" : ""}`);
+      if (p.hokatsuOyaTotal > p.hokatsuOya.length)
+        out.push(`    …ほか${p.hokatsuOyaTotal - p.hokatsuOya.length}件`);
+    }
+    for (const g of p.hokatsuKo) {
+      const tk = g.tokurei ? `、特例条件=1が${g.tokurei}件` : "";
+      out.push(`  このコードが包括する項目(被包括・${esc(g.tani)}[グループ${esc(g.grp)}]): ${g.total}件${tk}`);
+      for (const e of g.examples)
+        out.push(`    - ${esc(e.code)} ${esc(e.name)}${e.tokurei === "1" ? "【要通知確認】" : ""}`);
+      if (g.total > g.examples.length) out.push(`    …ほか${g.total - g.examples.length}件`);
+    }
+    if (!p.hokatsuOyaTotal && !p.hokatsuKo.length)
+      out.push("  包括・被包括テーブルに収載なし(被包括項目が明記されない包括あり。包括されない意味ではない)");
+    if (p.tekiouTable) {
+      out.push(`■ 適応傷病名の逆引き(チェックマスタ ${esc(p.tekiouTable)}):`);
+      tekiouLines();
+    }
+  } else if (p.kind === "医薬品" && p.tekiouTable) {
+    out.push(`■ 適応傷病名の逆引き(チェックマスタ ${esc(p.tekiouTable)}):`);
+    tekiouLines();
+    out.push(`■ 禁忌傷病名(checkmaster_iy_shobyokinki): ${p.kinkiTotal}件`);
+    for (const e of p.kinkiExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(名称不明)")}`);
+    if (p.kinkiTotal > p.kinkiExamples.length) out.push(`    …ほか${p.kinkiTotal - p.kinkiExamples.length}件`);
+    out.push(`■ 併用禁忌の相手医薬品(checkmaster_iy_heiyokinki): ${p.heiyoTotal}件`);
+    for (const e of p.heiyoExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(名称不明)")}`);
+    if (p.heiyoTotal > p.heiyoExamples.length) out.push(`    …ほか${p.heiyoTotal - p.heiyoExamples.length}件`);
+  }
+  out.push("※相手一覧・逆引きはテーブル収載分のみです。一覧に無いことは併算定可・適応可を意味しません(未収載ルール・条件は原文で確認)。");
 }
 
 /* ---------- 検索(search.py の移植) ---------- */
