@@ -491,7 +491,6 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
     jireiSummary, drugs, diseases, shinryokoi, profile, commentYoken};
 }
 
-const PROFILE_EXAMPLES = 10;
 const PROFILE_KUBUN_IMI = {
   "1": "自コード側を算定(相手側が算定不可)",
   "2": "相手側を算定(自コードが算定不可)",
@@ -518,7 +517,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
                haihan_kubun AS kubun, tokurei_joken AS tokurei
         FROM ${table} WHERE edition=? AND shinryokoi_code_1=?
           AND shinsetsu_ymd<=? AND haishi_ymd>=?
-        ORDER BY shinryokoi_code_2 LIMIT ${PROFILE_EXAMPLES}`, [edition, code, me, ms]);
+        ORDER BY shinryokoi_code_2`, [edition, code, me, ms]);
       const kubunCounts = {};
       for (const r of agg) kubunCounts[r.haihan_kubun] = Number(r.n);
       p.haihanAite.push({table: `${table}(${edition})`, joken,
@@ -540,7 +539,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
              CASE WHEN m.group_bango_1 = h.group_bango THEN m.hokatsu_tani_1
                   WHEN m.group_bango_2 = h.group_bango THEN m.hokatsu_tani_2
                   ELSE m.hokatsu_tani_3 END AS tani
-      ${oyaWhere} ORDER BY m.shinryokoi_code LIMIT ${PROFILE_EXAMPLES}`, oyaParams);
+      ${oyaWhere} ORDER BY m.shinryokoi_code`, oyaParams);
     const hojo = await rows(`
       SELECT hokatsu_tani_1, group_bango_1, hokatsu_tani_2, group_bango_2,
              hokatsu_tani_3, group_bango_3
@@ -560,7 +559,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
                  tokurei_joken AS tokurei
           FROM hokatsu WHERE edition=? AND group_bango=?
             AND shinsetsu_ymd<=? AND haishi_ymd>=?
-          ORDER BY shinryokoi_code LIMIT ${PROFILE_EXAMPLES}`, [edition, g, me, ms]);
+          ORDER BY shinryokoi_code`, [edition, g, me, ms]);
         const tani = h[`hokatsu_tani_${i2}`];
         p.hokatsuKo.push({grp: g, tani: HOKATSU_TANI[tani] ?? `単位コード${tani}(不明)`,
           total: Number(agg[0].n), tokurei: Number(agg[0].t ?? 0), examples});
@@ -582,7 +581,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
         LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = s.shobyomei_code
         WHERE s.edition=? AND s.shinryokoi_code=? AND s.henko_kubun NOT IN ('1','9')
           AND s.shobyomei_code <> '0000000'
-        ORDER BY s.shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+        ORDER BY s.shobyomei_code`, [edition, ckEdition, code]);
     }
     return p;
   }
@@ -603,7 +602,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
       LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = t.shobyomei_code
       WHERE t.edition=? AND t.iyakuhin_code=? AND t.henko_kubun NOT IN ('1','9')
         AND t.shobyomei_code <> '0000000'
-      ORDER BY t.shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+      ORDER BY t.shobyomei_code`, [edition, ckEdition, code]);
     p.kinkiTotal = Number((await rows(`
       SELECT count(DISTINCT kinki_shobyomei_code) AS n FROM checkmaster_iy_shobyokinki
       WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')`,
@@ -613,7 +612,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
       FROM checkmaster_iy_shobyokinki k
       LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = k.kinki_shobyomei_code
       WHERE k.edition=? AND k.iyakuhin_code=? AND k.henko_kubun NOT IN ('1','9')
-      ORDER BY k.kinki_shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+      ORDER BY k.kinki_shobyomei_code`, [edition, ckEdition, code]);
     p.heiyoTotal = Number((await rows(`
       SELECT count(DISTINCT CASE WHEN iyakuhin_code_l=? THEN iyakuhin_code_r
                                  ELSE iyakuhin_code_l END) AS n
@@ -628,7 +627,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
         WHERE edition=? AND (iyakuhin_code_l=? OR iyakuhin_code_r=?)
           AND henko_kubun NOT IN ('1','9')
       ) LEFT JOIN master_iyakuhin m ON m.edition=? AND m.iyakuhin_code = aite
-      ORDER BY aite LIMIT ${PROFILE_EXAMPLES}`,
+      ORDER BY aite`,
       [code, ckEdition, code, code, iyEdition]);
   }
   return p;
@@ -883,8 +882,6 @@ function renderProfile(out, R) {
     if (p.tekiouTotal) {
       out.push(`  収載 ${p.tekiouTotal}件(性別・年齢・入外等の条件付きを含む):`);
       for (const e of p.tekiouExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(名称不明)")}`);
-      if (p.tekiouTotal > p.tekiouExamples.length)
-        out.push(`    …ほか${p.tekiouTotal - p.tekiouExamples.length}件(傷病名コードを併記して判定すると個別照合できます)`);
     } else if (p.tekiouMujoken) {
       out.push(`  傷病名を条件としない行のみ収載(${p.tekiouMujoken}行・投与量/日数チェック用) → 傷病名別の適応一覧は収載なし`);
     } else {
@@ -904,8 +901,7 @@ function renderProfile(out, R) {
         out.push(`  ${esc(h.joken)}: ${h.total}件(${parts.join("/")}${tk})`);
         for (const e of h.examples)
           out.push(`    - ${esc(e.code)} ${esc(e.name)} → ${esc(PROFILE_KUBUN_IMI[e.kubun] ?? "不明")}${e.tokurei === "1" ? "【要通知確認】" : ""}`);
-        if (h.total > h.examples.length)
-          out.push(`    …ほか${h.total - h.examples.length}件(根拠: ${esc(h.table)})`);
+        out.push(`    (根拠: ${esc(h.table)})`);
       }
     } else {
       out.push("  4テーブルとも収載なし(未収載パターンの可能性あり。併算定可の意味ではない)");
@@ -915,15 +911,12 @@ function renderProfile(out, R) {
       out.push(`  このコードを包括する項目(親・算定時にこのコードが包括される): ${p.hokatsuOyaTotal}件`);
       for (const o of p.hokatsuOya)
         out.push(`    - ${esc(o.oya_code)} ${esc(o.oya_name)}(包括単位: ${esc(HOKATSU_TANI[o.tani] ?? `単位コード${o.tani}`)})[グループ${esc(o.grp)}]${o.tokurei === "1" ? "【要通知確認】" : ""}`);
-      if (p.hokatsuOyaTotal > p.hokatsuOya.length)
-        out.push(`    …ほか${p.hokatsuOyaTotal - p.hokatsuOya.length}件`);
     }
     for (const g of p.hokatsuKo) {
       const tk = g.tokurei ? `、特例条件=1が${g.tokurei}件` : "";
       out.push(`  このコードが包括する項目(被包括・${esc(g.tani)}[グループ${esc(g.grp)}]): ${g.total}件${tk}`);
       for (const e of g.examples)
         out.push(`    - ${esc(e.code)} ${esc(e.name)}${e.tokurei === "1" ? "【要通知確認】" : ""}`);
-      if (g.total > g.examples.length) out.push(`    …ほか${g.total - g.examples.length}件`);
     }
     if (!p.hokatsuOyaTotal && !p.hokatsuKo.length)
       out.push("  包括・被包括テーブルに収載なし(被包括項目が明記されない包括あり。包括されない意味ではない)");
@@ -936,10 +929,8 @@ function renderProfile(out, R) {
     tekiouLines();
     out.push(`■ 禁忌傷病名(checkmaster_iy_shobyokinki): ${p.kinkiTotal}件`);
     for (const e of p.kinkiExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(名称不明)")}`);
-    if (p.kinkiTotal > p.kinkiExamples.length) out.push(`    …ほか${p.kinkiTotal - p.kinkiExamples.length}件`);
     out.push(`■ 併用禁忌の相手医薬品(checkmaster_iy_heiyokinki): ${p.heiyoTotal}件`);
     for (const e of p.heiyoExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(名称不明)")}`);
-    if (p.heiyoTotal > p.heiyoExamples.length) out.push(`    …ほか${p.heiyoTotal - p.heiyoExamples.length}件`);
   }
   out.push("※相手一覧・逆引きはテーブル収載分のみです。一覧に無いことは併算定可・適応可を意味しません(未収載ルール・条件は原文で確認)。");
 }

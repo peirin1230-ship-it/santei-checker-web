@@ -12862,7 +12862,6 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
     commentYoken
   };
 }
-var PROFILE_EXAMPLES = 10;
 var PROFILE_KUBUN_IMI = {
   "1": "\u81EA\u30B3\u30FC\u30C9\u5074\u3092\u7B97\u5B9A(\u76F8\u624B\u5074\u304C\u7B97\u5B9A\u4E0D\u53EF)",
   "2": "\u76F8\u624B\u5074\u3092\u7B97\u5B9A(\u81EA\u30B3\u30FC\u30C9\u304C\u7B97\u5B9A\u4E0D\u53EF)",
@@ -12902,7 +12901,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
                haihan_kubun AS kubun, tokurei_joken AS tokurei
         FROM ${table} WHERE edition=? AND shinryokoi_code_1=?
           AND shinsetsu_ymd<=? AND haishi_ymd>=?
-        ORDER BY shinryokoi_code_2 LIMIT ${PROFILE_EXAMPLES}`, [edition, code, me, ms]);
+        ORDER BY shinryokoi_code_2`, [edition, code, me, ms]);
       const kubunCounts = {};
       for (const r of agg) kubunCounts[r.haihan_kubun] = Number(r.n);
       p2.haihanAite.push({
@@ -12929,7 +12928,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
              CASE WHEN m.group_bango_1 = h.group_bango THEN m.hokatsu_tani_1
                   WHEN m.group_bango_2 = h.group_bango THEN m.hokatsu_tani_2
                   ELSE m.hokatsu_tani_3 END AS tani
-      ${oyaWhere} ORDER BY m.shinryokoi_code LIMIT ${PROFILE_EXAMPLES}`, oyaParams);
+      ${oyaWhere} ORDER BY m.shinryokoi_code`, oyaParams);
     const hojo = await rows(`
       SELECT hokatsu_tani_1, group_bango_1, hokatsu_tani_2, group_bango_2,
              hokatsu_tani_3, group_bango_3
@@ -12949,7 +12948,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
                  tokurei_joken AS tokurei
           FROM hokatsu WHERE edition=? AND group_bango=?
             AND shinsetsu_ymd<=? AND haishi_ymd>=?
-          ORDER BY shinryokoi_code LIMIT ${PROFILE_EXAMPLES}`, [edition, g, me, ms]);
+          ORDER BY shinryokoi_code`, [edition, g, me, ms]);
         const tani = h2[`hokatsu_tani_${i2}`];
         p2.hokatsuKo.push({
           grp: g,
@@ -12976,7 +12975,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
         LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = s.shobyomei_code
         WHERE s.edition=? AND s.shinryokoi_code=? AND s.henko_kubun NOT IN ('1','9')
           AND s.shobyomei_code <> '0000000'
-        ORDER BY s.shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+        ORDER BY s.shobyomei_code`, [edition, ckEdition, code]);
     }
     return p2;
   }
@@ -12997,7 +12996,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
       LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = t.shobyomei_code
       WHERE t.edition=? AND t.iyakuhin_code=? AND t.henko_kubun NOT IN ('1','9')
         AND t.shobyomei_code <> '0000000'
-      ORDER BY t.shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+      ORDER BY t.shobyomei_code`, [edition, ckEdition, code]);
     p2.kinkiTotal = Number((await rows(
       `
       SELECT count(DISTINCT kinki_shobyomei_code) AS n FROM checkmaster_iy_shobyokinki
@@ -13009,7 +13008,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
       FROM checkmaster_iy_shobyokinki k
       LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = k.kinki_shobyomei_code
       WHERE k.edition=? AND k.iyakuhin_code=? AND k.henko_kubun NOT IN ('1','9')
-      ORDER BY k.kinki_shobyomei_code LIMIT ${PROFILE_EXAMPLES}`, [edition, ckEdition, code]);
+      ORDER BY k.kinki_shobyomei_code`, [edition, ckEdition, code]);
     p2.heiyoTotal = Number((await rows(`
       SELECT count(DISTINCT CASE WHEN iyakuhin_code_l=? THEN iyakuhin_code_r
                                  ELSE iyakuhin_code_l END) AS n
@@ -13025,7 +13024,7 @@ async function buildProfile(code, info, edition, ym, ms, me) {
         WHERE edition=? AND (iyakuhin_code_l=? OR iyakuhin_code_r=?)
           AND henko_kubun NOT IN ('1','9')
       ) LEFT JOIN master_iyakuhin m ON m.edition=? AND m.iyakuhin_code = aite
-      ORDER BY aite LIMIT ${PROFILE_EXAMPLES}`,
+      ORDER BY aite`,
       [code, ckEdition, code, code, iyEdition]
     );
   }
@@ -13265,8 +13264,6 @@ function renderProfile(out, R2) {
     if (p2.tekiouTotal) {
       out.push(`  \u53CE\u8F09 ${p2.tekiouTotal}\u4EF6(\u6027\u5225\u30FB\u5E74\u9F62\u30FB\u5165\u5916\u7B49\u306E\u6761\u4EF6\u4ED8\u304D\u3092\u542B\u3080):`);
       for (const e of p2.tekiouExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(\u540D\u79F0\u4E0D\u660E)")}`);
-      if (p2.tekiouTotal > p2.tekiouExamples.length)
-        out.push(`    \u2026\u307B\u304B${p2.tekiouTotal - p2.tekiouExamples.length}\u4EF6(\u50B7\u75C5\u540D\u30B3\u30FC\u30C9\u3092\u4F75\u8A18\u3057\u3066\u5224\u5B9A\u3059\u308B\u3068\u500B\u5225\u7167\u5408\u3067\u304D\u307E\u3059)`);
     } else if (p2.tekiouMujoken) {
       out.push(`  \u50B7\u75C5\u540D\u3092\u6761\u4EF6\u3068\u3057\u306A\u3044\u884C\u306E\u307F\u53CE\u8F09(${p2.tekiouMujoken}\u884C\u30FB\u6295\u4E0E\u91CF/\u65E5\u6570\u30C1\u30A7\u30C3\u30AF\u7528) \u2192 \u50B7\u75C5\u540D\u5225\u306E\u9069\u5FDC\u4E00\u89A7\u306F\u53CE\u8F09\u306A\u3057`);
     } else {
@@ -13286,8 +13283,7 @@ function renderProfile(out, R2) {
         out.push(`  ${esc(h2.joken)}: ${h2.total}\u4EF6(${parts.join("/")}${tk})`);
         for (const e of h2.examples)
           out.push(`    - ${esc(e.code)} ${esc(e.name)} \u2192 ${esc(PROFILE_KUBUN_IMI[e.kubun] ?? "\u4E0D\u660E")}${e.tokurei === "1" ? "\u3010\u8981\u901A\u77E5\u78BA\u8A8D\u3011" : ""}`);
-        if (h2.total > h2.examples.length)
-          out.push(`    \u2026\u307B\u304B${h2.total - h2.examples.length}\u4EF6(\u6839\u62E0: ${esc(h2.table)})`);
+        out.push(`    (\u6839\u62E0: ${esc(h2.table)})`);
       }
     } else {
       out.push("  4\u30C6\u30FC\u30D6\u30EB\u3068\u3082\u53CE\u8F09\u306A\u3057(\u672A\u53CE\u8F09\u30D1\u30BF\u30FC\u30F3\u306E\u53EF\u80FD\u6027\u3042\u308A\u3002\u4F75\u7B97\u5B9A\u53EF\u306E\u610F\u5473\u3067\u306F\u306A\u3044)");
@@ -13297,15 +13293,12 @@ function renderProfile(out, R2) {
       out.push(`  \u3053\u306E\u30B3\u30FC\u30C9\u3092\u5305\u62EC\u3059\u308B\u9805\u76EE(\u89AA\u30FB\u7B97\u5B9A\u6642\u306B\u3053\u306E\u30B3\u30FC\u30C9\u304C\u5305\u62EC\u3055\u308C\u308B): ${p2.hokatsuOyaTotal}\u4EF6`);
       for (const o of p2.hokatsuOya)
         out.push(`    - ${esc(o.oya_code)} ${esc(o.oya_name)}(\u5305\u62EC\u5358\u4F4D: ${esc(HOKATSU_TANI[o.tani] ?? `\u5358\u4F4D\u30B3\u30FC\u30C9${o.tani}`)})[\u30B0\u30EB\u30FC\u30D7${esc(o.grp)}]${o.tokurei === "1" ? "\u3010\u8981\u901A\u77E5\u78BA\u8A8D\u3011" : ""}`);
-      if (p2.hokatsuOyaTotal > p2.hokatsuOya.length)
-        out.push(`    \u2026\u307B\u304B${p2.hokatsuOyaTotal - p2.hokatsuOya.length}\u4EF6`);
     }
     for (const g of p2.hokatsuKo) {
       const tk = g.tokurei ? `\u3001\u7279\u4F8B\u6761\u4EF6=1\u304C${g.tokurei}\u4EF6` : "";
       out.push(`  \u3053\u306E\u30B3\u30FC\u30C9\u304C\u5305\u62EC\u3059\u308B\u9805\u76EE(\u88AB\u5305\u62EC\u30FB${esc(g.tani)}[\u30B0\u30EB\u30FC\u30D7${esc(g.grp)}]): ${g.total}\u4EF6${tk}`);
       for (const e of g.examples)
         out.push(`    - ${esc(e.code)} ${esc(e.name)}${e.tokurei === "1" ? "\u3010\u8981\u901A\u77E5\u78BA\u8A8D\u3011" : ""}`);
-      if (g.total > g.examples.length) out.push(`    \u2026\u307B\u304B${g.total - g.examples.length}\u4EF6`);
     }
     if (!p2.hokatsuOyaTotal && !p2.hokatsuKo.length)
       out.push("  \u5305\u62EC\u30FB\u88AB\u5305\u62EC\u30C6\u30FC\u30D6\u30EB\u306B\u53CE\u8F09\u306A\u3057(\u88AB\u5305\u62EC\u9805\u76EE\u304C\u660E\u8A18\u3055\u308C\u306A\u3044\u5305\u62EC\u3042\u308A\u3002\u5305\u62EC\u3055\u308C\u306A\u3044\u610F\u5473\u3067\u306F\u306A\u3044)");
@@ -13318,10 +13311,8 @@ function renderProfile(out, R2) {
     tekiouLines();
     out.push(`\u25A0 \u7981\u5FCC\u50B7\u75C5\u540D(checkmaster_iy_shobyokinki): ${p2.kinkiTotal}\u4EF6`);
     for (const e of p2.kinkiExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(\u540D\u79F0\u4E0D\u660E)")}`);
-    if (p2.kinkiTotal > p2.kinkiExamples.length) out.push(`    \u2026\u307B\u304B${p2.kinkiTotal - p2.kinkiExamples.length}\u4EF6`);
     out.push(`\u25A0 \u4F75\u7528\u7981\u5FCC\u306E\u76F8\u624B\u533B\u85AC\u54C1(checkmaster_iy_heiyokinki): ${p2.heiyoTotal}\u4EF6`);
     for (const e of p2.heiyoExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(\u540D\u79F0\u4E0D\u660E)")}`);
-    if (p2.heiyoTotal > p2.heiyoExamples.length) out.push(`    \u2026\u307B\u304B${p2.heiyoTotal - p2.heiyoExamples.length}\u4EF6`);
   }
   out.push("\u203B\u76F8\u624B\u4E00\u89A7\u30FB\u9006\u5F15\u304D\u306F\u30C6\u30FC\u30D6\u30EB\u53CE\u8F09\u5206\u306E\u307F\u3067\u3059\u3002\u4E00\u89A7\u306B\u7121\u3044\u3053\u3068\u306F\u4F75\u7B97\u5B9A\u53EF\u30FB\u9069\u5FDC\u53EF\u3092\u610F\u5473\u3057\u307E\u305B\u3093(\u672A\u53CE\u8F09\u30EB\u30FC\u30EB\u30FB\u6761\u4EF6\u306F\u539F\u6587\u3067\u78BA\u8A8D)\u3002");
 }
