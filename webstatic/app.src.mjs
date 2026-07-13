@@ -372,7 +372,7 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
           FROM checkmaster_iy_tekio WHERE edition=? AND iyakuhin_code=?
             AND shobyomei_code='0000000' AND henko_kubun NOT IN ('1','9')`,
           [ckEdition, drug]);
-        const ryo = ryoMap[drug], nissu = nissuMap[drug];
+        const ryo = ryoMap[drug] ?? ryoMap[""], nissu = nissuMap[drug] ?? nissuMap[""];
         const doseSrc = [...rep.matches.map((m) => [m.code, m.name, m.rows]),
           [null, null, mujokenRows]];
         for (const [dc, dn, rws] of doseSrc) {
@@ -1054,9 +1054,16 @@ function parseKv(text) {
   const out = {};
   for (const tok of text.trim().split(/[\s,、]+/)) {
     if (!tok) continue;
-    const [c, v] = tok.split("=");
-    const f = parseFloat(v);
-    if (!Number.isNaN(f)) out[c] = f;
+    const eq = tok.indexOf("=");
+    if (eq >= 0) {
+      // 「医薬品コード=数値」形式: その医薬品にだけ適用
+      const f = parseFloat(tok.slice(eq + 1));
+      if (!Number.isNaN(f)) out[toHw(tok.slice(0, eq))] = f;
+    } else {
+      // コードを伴わない数値: コード指定のない医薬品すべての既定値(最初の1つを採用)
+      const f = parseFloat(tok);
+      if (!Number.isNaN(f) && !("" in out)) out[""] = f;
+    }
   }
   return out;
 }

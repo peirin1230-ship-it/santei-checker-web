@@ -12698,7 +12698,7 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
             AND shobyomei_code='0000000' AND henko_kubun NOT IN ('1','9')`,
           [ckEdition, drug]
         );
-        const ryo = ryoMap[drug], nissu = nissuMap[drug];
+        const ryo = ryoMap[drug] ?? ryoMap[""], nissu = nissuMap[drug] ?? nissuMap[""];
         const doseSrc = [
           ...rep.matches.map((m2) => [m2.code, m2.name, m2.rows]),
           [null, null, mujokenRows]
@@ -13429,9 +13429,14 @@ function parseKv(text) {
   const out = {};
   for (const tok of text.trim().split(/[\s,、]+/)) {
     if (!tok) continue;
-    const [c, v2] = tok.split("=");
-    const f = parseFloat(v2);
-    if (!Number.isNaN(f)) out[c] = f;
+    const eq = tok.indexOf("=");
+    if (eq >= 0) {
+      const f = parseFloat(tok.slice(eq + 1));
+      if (!Number.isNaN(f)) out[toHw(tok.slice(0, eq))] = f;
+    } else {
+      const f = parseFloat(tok);
+      if (!Number.isNaN(f) && !("" in out)) out[""] = f;
+    }
   }
   return out;
 }
