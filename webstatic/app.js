@@ -12423,6 +12423,7 @@ var SANSHO_HANI = {
   "\u5358\u7A81\u7E26": "\u300C\u5358\u6708\u300D\u3001\u300C\u7A81\u5408\u300D\u53CA\u3073\u300C\u7E26\u89A7\u300D\u306E\u7D44\u5408\u305B"
 };
 var MUJOKEN_CODE = "0000000";
+var DEFAULT_AMOUNT_KEY = "";
 var HAZURE_CODES = {
   "0000001": "\u5916\u308C\u50241(\u533B\u79D1\u306E\u8A3A\u7642\u8B58\u5225: \u6295\u85AC(\u5185\u670D)\u30FB\u6295\u85AC(\u305D\u306E\u4ED6)\u30FB\u6CE8\u5C04)",
   "0000002": "\u5916\u308C\u50242(\u533B\u79D1\u306E\u8A3A\u7642\u8B58\u5225: \u51E6\u7F6E\u30FB\u624B\u8853\u30FB\u9EBB\u9154\u30FB\u691C\u67FB/\u75C5\u7406\u30FB\u753B\u50CF\u8A3A\u65AD)",
@@ -12834,7 +12835,7 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
             AND shobyomei_code=? AND henko_kubun NOT IN ('1','9')`,
           [ckEdition, drug, MUJOKEN_CODE]
         );
-        const ryo = ryoMap[drug] ?? ryoMap[""], nissu = nissuMap[drug] ?? nissuMap[""];
+        const ryo = ryoMap[drug] ?? ryoMap[DEFAULT_AMOUNT_KEY], nissu = nissuMap[drug] ?? nissuMap[DEFAULT_AMOUNT_KEY];
         const doseSrc = [
           ...rep.matches.map((m2) => [m2.code, m2.name, m2.rows]),
           [null, null, mujokenRows]
@@ -13680,18 +13681,20 @@ function activateTab(name) {
   document.querySelectorAll("nav a[data-tab]").forEach((a) => a.classList.toggle("active", a.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${name}`));
 }
+var AMOUNT_NUM_RE = /^[+-]?(\d+\.?\d*|\.\d+)$/;
+var toHwNum = (s) => toHw(s).replace(/．/g, ".").replace(/＝/g, "=");
 function parseKv(text) {
   const out = {};
-  for (const tok of text.trim().split(/[\s,、]+/)) {
-    if (!tok) continue;
+  for (const raw of text.trim().split(/[\s,、]+/)) {
+    if (!raw) continue;
+    const tok = toHwNum(raw);
     const eq = tok.indexOf("=");
-    if (eq >= 0) {
-      const f = parseFloat(tok.slice(eq + 1));
-      if (!Number.isNaN(f)) out[toHw(tok.slice(0, eq))] = f;
-    } else {
-      const f = parseFloat(tok);
-      if (!Number.isNaN(f) && !("" in out)) out[""] = f;
-    }
+    const numText = eq >= 0 ? tok.slice(eq + 1) : tok;
+    if (!AMOUNT_NUM_RE.test(numText))
+      throw new Error(`\u6570\u91CF\u30FB\u65E5\u6570\u306F\u300C\u30B3\u30FC\u30C9=\u6570\u5024\u300D\u307E\u305F\u306F\u6570\u5024\u3067\u6307\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044: ${raw}`);
+    const f = parseFloat(numText);
+    if (eq >= 0) out[tok.slice(0, eq)] = f;
+    else if (!(DEFAULT_AMOUNT_KEY in out)) out[DEFAULT_AMOUNT_KEY] = f;
   }
   return out;
 }

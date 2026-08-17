@@ -156,6 +156,8 @@ const SANSHO_HANI = {
   "単突縦": "「単月」、「突合」及び「縦覧」の組合せ",
 };
 const MUJOKEN_CODE = "0000000";
+/* 数量・投与日数でコードを伴わない数値を入れるキー(config.DEFAULT_AMOUNT_KEY) */
+const DEFAULT_AMOUNT_KEY = "";
 const HAZURE_CODES = {
   "0000001": "外れ値1(医科の診療識別: 投薬(内服)・投薬(その他)・注射)",
   "0000002": "外れ値2(医科の診療識別: 処置・手術・麻酔・検査/病理・画像診断)",
@@ -494,7 +496,8 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
           FROM checkmaster_iy_tekio WHERE edition=? AND iyakuhin_code=?
             AND shobyomei_code=? AND henko_kubun NOT IN ('1','9')`,
           [ckEdition, drug, MUJOKEN_CODE]);
-        const ryo = ryoMap[drug] ?? ryoMap[""], nissu = nissuMap[drug] ?? nissuMap[""];
+        const ryo = ryoMap[drug] ?? ryoMap[DEFAULT_AMOUNT_KEY],
+          nissu = nissuMap[drug] ?? nissuMap[DEFAULT_AMOUNT_KEY];
         const doseSrc = [...rep.matches.map((m) => [m.code, m.name, m.rows]),
           [null, null, mujokenRows]];
         for (const [dc, dn, rws] of doseSrc) {
@@ -1310,20 +1313,27 @@ function activateTab(name) {
     t.classList.toggle("active", t.id === `tab-${name}`));
 }
 
+/* 数量・投与日数の入力(config.parse_amount_input の移植)。
+   CLI(--ryo)・サーバー版Web・静的版で解釈を揃える。
+   数値として読めないトークンは黙って捨てずエラーにする
+   (「610406079-5」のような打ち間違いを 610406079 と読むのを防ぐ)。 */
+const AMOUNT_NUM_RE = /^[+-]?(\d+\.?\d*|\.\d+)$/;
+const toHwNum = (s) => toHw(s).replace(/．/g, ".").replace(/＝/g, "=");  // 全角の.と=も半角へ
+
 function parseKv(text) {
   const out = {};
-  for (const tok of text.trim().split(/[\s,、]+/)) {
-    if (!tok) continue;
+  for (const raw of text.trim().split(/[\s,、]+/)) {
+    if (!raw) continue;
+    const tok = toHwNum(raw);
     const eq = tok.indexOf("=");
-    if (eq >= 0) {
-      // 「医薬品コード=数値」形式: その医薬品にだけ適用
-      const f = parseFloat(tok.slice(eq + 1));
-      if (!Number.isNaN(f)) out[toHw(tok.slice(0, eq))] = f;
-    } else {
-      // コードを伴わない数値: コード指定のない医薬品すべての既定値(最初の1つを採用)
-      const f = parseFloat(tok);
-      if (!Number.isNaN(f) && !("" in out)) out[""] = f;
-    }
+    // 「医薬品コード=数値」形式はその医薬品にだけ、コードを伴わない数値は
+    // コード指定のない医薬品すべての既定値として適用する(最初の1つを採用)
+    const numText = eq >= 0 ? tok.slice(eq + 1) : tok;
+    if (!AMOUNT_NUM_RE.test(numText))
+      throw new Error(`数量・日数は「コード=数値」または数値で指定してください: ${raw}`);
+    const f = parseFloat(numText);
+    if (eq >= 0) out[tok.slice(0, eq)] = f;
+    else if (!(DEFAULT_AMOUNT_KEY in out)) out[DEFAULT_AMOUNT_KEY] = f;
   }
   return out;
 }
