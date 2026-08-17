@@ -140,6 +140,63 @@ const HOKATSU_TANI = {"01": "1日につき", "1": "1日につき", "02": "同一
   "06": "1手術につき", "6": "1手術につき"};
 const NYUGAI = {"0": "入院・入院外とも記録可", "1": "入院レセプトに限り記録可能",
   "2": "入院外レセプトに限り記録可能"};
+
+/* チェックマスタの上限表示用(checkmaster.py の移植。出典は仕様書
+   docs/spec/20251031_CC_SIYO_CHECKMASTA.pdf: チェック区分=p.19項番8、
+   参照範囲=別表3 p.31、外れ値=p.19項番2・別表7 p.32-33) */
+const CHECK_KUBUN = {"0": "無効", "1": "投与量チェック", "2": "異常値チェック"};
+const SANSHO_HANI = {
+  "単月": "当月請求分のみ参照",
+  "入外": "同一医療機関・同一患者の入院レセプトと入院外レセプトを参照",
+  "突合": "同一医療機関・同一患者・同一診療(調剤)月の医科(歯科)レセプトと調剤レセプトを参照",
+  "縦覧": "同一医療機関・同一患者の当月請求分と過去複数月のレセプトを参照",
+  "単入": "「単月」及び「入外」の組合せ",
+  "単突": "「単月」及び「突合」の組合せ",
+  "単縦": "「単月」及び「縦覧」の組合せ",
+  "単突縦": "「単月」、「突合」及び「縦覧」の組合せ",
+};
+const MUJOKEN_CODE = "0000000";
+const HAZURE_CODES = {
+  "0000001": "外れ値1(医科の診療識別: 投薬(内服)・投薬(その他)・注射)",
+  "0000002": "外れ値2(医科の診療識別: 処置・手術・麻酔・検査/病理・画像診断)",
+  "0000003": "外れ値3(医科の診療識別: 在宅・投薬(外用)・その他)",
+};
+const SPECIAL_SHOBYO_CODES = [MUJOKEN_CODE, ...Object.keys(HAZURE_CODES)];
+const RYO_TAISHOGAI = "99999.99999";   // 最大投与量: チェック対象外
+const NISSU_TAISHOGAI = "999";          // 最長投与日数: チェック対象外
+const RYO_TANI_NOTE =
+  "※最大投与量の単位は仕様書に明記がありません(仕様書の定義は" +
+  "「当該医薬品・傷病名を対象とした数量等のチェックに使用している値」)。" +
+  "実際の数量の単位は医薬品マスター・添付文書で確認してください";
+const JOGEN_TITLE = "使用上限(投与量・投与日数・算定回数)";
+
+/* 適宜増減等区分は仕様書で「英数2バイト・可変」のコード内容0/1。実データ
+   (cc20251031)は "00"/"01" の2桁ゼロ埋めのため、前ゼロを落として判定する */
+const isTekigiZogen = (v) => String(v ?? "").trim().replace(/^0+/, "") === "1";
+/* 上限値の前ゼロ・小数末尾ゼロを落とす(生値は根拠表示に残す) */
+const fmtAmount = (v) => {
+  const s = String(v ?? "").trim();
+  if (!s) return s;
+  if (s.includes(".")) {
+    const [i, f0] = s.split(".");
+    const f = f0.replace(/0+$/, "");
+    const seibu = i.replace(/^0+/, "") || "0";
+    return f ? `${seibu}.${f}` : seibu;
+  }
+  return s.replace(/^0+/, "") || "0";
+};
+const fmtInput = (v) => (v == null ? "" : (Number.isInteger(v) ? String(v) : String(v)));
+const sanshoHaniLabel = (v) => {
+  const s = String(v ?? "").trim();
+  if (!s) return "不明";
+  return SANSHO_HANI[s] ? `${s}(${SANSHO_HANI[s]})` : `${s}(別表3に該当なし・不明)`;
+};
+const ageLabel = (kagen, jogen) => {
+  const k = String(kagen ?? "").trim(), j = String(jogen ?? "").trim();
+  if ((k === "" || k === "000.00") && (j === "" || j === "999.99")) return "年齢制限なし";
+  return [(k === "" || k === "000.00") ? "下限なし" : `${fmtAmount(k)}歳以上`,
+    (j === "" || j === "999.99") ? "上限なし" : `${fmtAmount(j)}歳以下`].join("・");
+};
 const KUBUN_EXPR = `coalesce(nullif(tensuhyo_kubun_bango, ''),
   code_hyoyo_bango_alphabet || code_hyoyo_bango_kubun_bango ||
   CASE WHEN code_hyoyo_bango_edaban NOT IN ('', '00')
@@ -215,6 +272,68 @@ async function lookupCode(code, edition, ym, monthStart) {
     }
   }
   return info;
+}
+
+/* 入力傷病名以外の上限を参考表示用にまとめる(checkmaster._dose_reference の移植)。
+   傷病名別の上限は医薬品1件で数百行になり得るため、上限値・チェック区分・
+   参照範囲が同じ行を1件にまとめ、件数と傷病名の例を添える。 */
+async function doseReference(drug, matched, edition) {
+  const out = [];
+  const hz = Object.keys(HAZURE_CODES);
+  const hazure = await rows(`
+    SELECT shobyomei_code, saidai_toyoryo, saicho_toyo_nissu, tekigi_zogen_kubun,
+           check_kubun, sansho_hani, seibetsu, nenrei_kagen, nenrei_jogen
+    FROM checkmaster_iy_tekio
+    WHERE edition=? AND iyakuhin_code=?
+      AND shobyomei_code IN (${hz.map(() => "?").join(",")})
+      AND henko_kubun NOT IN ('1','9')
+      AND (saidai_toyoryo <> ? OR saicho_toyo_nissu <> ?)
+    ORDER BY shobyomei_code`,
+    [ckEdition, drug, ...hz, RYO_TAISHOGAI, NISSU_TAISHOGAI]);
+  for (const r of hazure) {
+    out.push({scope: "hazure", dc: r.shobyomei_code, dn: HAZURE_CODES[r.shobyomei_code],
+      lr: r.saidai_toyoryo !== RYO_TAISHOGAI ? r.saidai_toyoryo : null,
+      ln: r.saicho_toyo_nissu !== NISSU_TAISHOGAI ? r.saicho_toyo_nissu : null,
+      tekigi: isTekigiZogen(r.tekigi_zogen_kubun), checkKubun: r.check_kubun,
+      sansho: r.sansho_hani, seibetsu: r.seibetsu, kagen: r.nenrei_kagen,
+      jogen: r.nenrei_jogen, collated: false, n: 0, examples: [], jokenAri: false});
+  }
+  const exclude = [...SPECIAL_SHOBYO_CODES, ...matched];
+  const grouped = await rows(`
+    SELECT saidai_toyoryo, saicho_toyo_nissu, tekigi_zogen_kubun,
+           check_kubun, sansho_hani,
+           count(DISTINCT shobyomei_code) AS n,
+           min(shobyomei_code) AS ex_min, max(shobyomei_code) AS ex_max,
+           max(CASE WHEN seibetsu <> '0' OR nenrei_kagen <> '000.00'
+                      OR nenrei_jogen <> '999.99' THEN 1 ELSE 0 END) AS joken
+    FROM checkmaster_iy_tekio
+    WHERE edition=? AND iyakuhin_code=?
+      AND shobyomei_code NOT IN (${exclude.map(() => "?").join(",")})
+      AND henko_kubun NOT IN ('1','9')
+      AND (saidai_toyoryo <> ? OR saicho_toyo_nissu <> ?)
+    GROUP BY 1, 2, 3, 4, 5
+    ORDER BY 1, 2`,
+    [ckEdition, drug, ...exclude, RYO_TAISHOGAI, NISSU_TAISHOGAI]);
+  const names = {};
+  for (const r of grouped) for (const c of [r.ex_min, r.ex_max]) if (c) names[c] = null;
+  const keys = Object.keys(names);
+  if (keys.length) {
+    for (const r of await rows(`
+      SELECT shobyomei_code AS c, shobyomei_kihon_meisho AS n FROM master_shobyomei
+      WHERE edition=? AND shobyomei_code IN (${keys.map(() => "?").join(",")})`,
+      [edition, ...keys])) names[r.c] = r.n;
+  }
+  for (const r of grouped) {
+    const ex = [...new Set([r.ex_min, r.ex_max].filter(Boolean))];
+    out.push({scope: "other", dc: null, dn: null,
+      lr: r.saidai_toyoryo !== RYO_TAISHOGAI ? r.saidai_toyoryo : null,
+      ln: r.saicho_toyo_nissu !== NISSU_TAISHOGAI ? r.saicho_toyo_nissu : null,
+      tekigi: isTekigiZogen(r.tekigi_zogen_kubun), checkKubun: r.check_kubun,
+      sansho: r.sansho_hani, seibetsu: "", kagen: "", jogen: "", collated: false,
+      n: Number(r.n), examples: ex.map((c) => [c, names[c]]),
+      jokenAri: Number(r.joken) === 1});
+  }
+  return out;
 }
 
 async function runCheck(codesInput, ym, ryoMap, nissuMap) {
@@ -341,7 +460,8 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
     for (const drug of drugs) {
       const rep = {code: drug, name: infos[drug].name, kind: "医薬品",
         table: `checkmaster_iy_tekio(${ckEdition})`, listed: false, listedRows: 0,
-        matches: [], unmatched: [], mujoken: 0, kinki: [], dose: [], groups: [], manzen: []};
+        matches: [], unmatched: [], mujoken: 0, kinki: [], dose: [], doseRef: [],
+        groups: [], manzen: []};
       rep.listedRows = (await rows(
         "SELECT count(*) AS n FROM checkmaster_iy_tekio WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')",
         [ckEdition, drug]))[0].n;
@@ -355,7 +475,8 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
             SELECT shobyomei_code, seibetsu, nenrei_kagen, nenrei_jogen, check_kubun,
                    saidai_toyoryo, saicho_toyo_nissu, tekigi_zogen_kubun, sansho_hani
             FROM checkmaster_iy_tekio WHERE edition=? AND iyakuhin_code=? AND shobyomei_code=?
-              AND henko_kubun NOT IN ('1','9')`, [ckEdition, drug, d]);
+              AND henko_kubun NOT IN ('1','9')
+            ORDER BY seibetsu, nenrei_kagen, nenrei_jogen`, [ckEdition, drug, d]);
           if (rws.length) rep.matches.push({code: d, name: infos[d].name, rows: rws});
           else rep.unmatched.push({code: d, name: infos[d].name});
         }
@@ -368,26 +489,34 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
         }
         // 投与量・日数(照合対象: 適応該当行 + 0000000行)
         const mujokenRows = await rows(`
-          SELECT saidai_toyoryo, saicho_toyo_nissu, tekigi_zogen_kubun
+          SELECT saidai_toyoryo, saicho_toyo_nissu, tekigi_zogen_kubun, check_kubun,
+                 sansho_hani, seibetsu, nenrei_kagen, nenrei_jogen
           FROM checkmaster_iy_tekio WHERE edition=? AND iyakuhin_code=?
-            AND shobyomei_code='0000000' AND henko_kubun NOT IN ('1','9')`,
-          [ckEdition, drug]);
+            AND shobyomei_code=? AND henko_kubun NOT IN ('1','9')`,
+          [ckEdition, drug, MUJOKEN_CODE]);
         const ryo = ryoMap[drug] ?? ryoMap[""], nissu = nissuMap[drug] ?? nissuMap[""];
         const doseSrc = [...rep.matches.map((m) => [m.code, m.name, m.rows]),
           [null, null, mujokenRows]];
         for (const [dc, dn, rws] of doseSrc) {
           for (const r of rws) {
-            const lr = r.saidai_toyoryo !== "99999.99999" ? r.saidai_toyoryo : null;
-            const ln = r.saicho_toyo_nissu !== "999" ? r.saicho_toyo_nissu : null;
+            const lr = r.saidai_toyoryo !== RYO_TAISHOGAI ? r.saidai_toyoryo : null;
+            const ln = r.saicho_toyo_nissu !== NISSU_TAISHOGAI ? r.saicho_toyo_nissu : null;
             if (lr === null && ln === null) continue;
-            rep.dose.push({dc, dn, lr, ln, tekigi: r.tekigi_zogen_kubun === "1",
-              ryo, nissu,
+            rep.dose.push({scope: dc === null ? "mujoken" : "match", dc, dn, lr, ln,
+              tekigi: isTekigiZogen(r.tekigi_zogen_kubun), ryo, nissu,
+              checkKubun: r.check_kubun ?? "", sansho: r.sansho_hani ?? "",
+              seibetsu: r.seibetsu ?? "", kagen: r.nenrei_kagen ?? "",
+              jogen: r.nenrei_jogen ?? "", collated: true,
               ryoOver: lr !== null && ryo != null ? ryo > parseFloat(lr) : null,
               nissuOver: ln !== null && nissu != null ? nissu > parseFloat(ln) : null});
           }
         }
+        // 傷病名を入力しなくても上限量が分かるよう、外れ値・その他の適応傷病名の
+        // 上限も参考として添える(患者の傷病名・剤型が特定できないため照合はしない)
+        rep.doseRef = await doseReference(drug, diseases, edition);
         rep.groups = await rows(`
-          SELECT group_mei, kikaku_chi, seigen_saidai_toyoryo_kikaku, check_taisho_flag
+          SELECT group_mei, ganryo_tani, kikaku_chi, seigen_saidai_toyoryo_kikaku,
+                 check_taisho_flag, sansho_hani
           FROM checkmaster_iy_toyoryou_group WHERE edition=? AND iyakuhin_code=?
             AND henko_kubun NOT IN ('1','9') LIMIT 3`, [ckEdition, drug]);
         rep.manzen = await rows(`
@@ -399,9 +528,11 @@ async function runCheck(codesInput, ym, ryoMap, nissuMap) {
     }
     if (diseases.length) {
       for (const act of shinryokoi) {
+        // 診療行為傷病名関連マスタには投与量・日数の列がないため dose/doseRef は空
         const rep = {code: act, name: infos[act].name, kind: "診療行為",
           table: `checkmaster_si_shobyo(${ckEdition})`, listed: false, listedRows: 0,
-          matches: [], unmatched: [], mujoken: 0, kinki: [], dose: [], groups: [], manzen: []};
+          matches: [], unmatched: [], mujoken: 0, kinki: [], dose: [], doseRef: [],
+          groups: [], manzen: []};
         rep.listedRows = (await rows(
           "SELECT count(*) AS n FROM checkmaster_si_shobyo WHERE edition=? AND shinryokoi_code=? AND henko_kubun NOT IN ('1','9')",
           [ckEdition, act]))[0].n;
@@ -502,7 +633,8 @@ const tokureiLabel = (t) => t === "1"
 async function buildProfile(code, info, edition, ym, ms, me) {
   const p = {code, kind: info.kind, haihanAite: [], hokatsuOya: [], hokatsuOyaTotal: 0,
     hokatsuKo: [], tekiouTotal: null, tekiouExamples: [], tekiouTable: null,
-    tekiouMujoken: 0, kinkiTotal: 0, kinkiExamples: [], heiyoTotal: 0, heiyoExamples: []};
+    tekiouMujoken: 0, tekiouHazure: 0, kinkiTotal: 0, kinkiExamples: [],
+    heiyoTotal: 0, heiyoExamples: []};
   if (info.kind === "診療行為") {
     for (const [table, joken] of HAIHAN_TABLES) {
       const agg = await rows(`
@@ -570,7 +702,8 @@ async function buildProfile(code, info, edition, ym, ms, me) {
       p.tekiouTotal = Number((await rows(`
         SELECT count(DISTINCT shobyomei_code) AS n FROM checkmaster_si_shobyo
         WHERE edition=? AND shinryokoi_code=? AND henko_kubun NOT IN ('1','9')
-          AND shobyomei_code <> '0000000'`, [ckEdition, code]))[0].n);
+          AND shobyomei_code NOT IN (${SPECIAL_SHOBYO_CODES.map(() => "?").join(",")})`,
+        [ckEdition, code, ...SPECIAL_SHOBYO_CODES]))[0].n);
       p.tekiouMujoken = Number((await rows(`
         SELECT count(*) AS n FROM checkmaster_si_shobyo
         WHERE edition=? AND shinryokoi_code=? AND henko_kubun NOT IN ('1','9')
@@ -580,8 +713,8 @@ async function buildProfile(code, info, edition, ym, ms, me) {
         FROM checkmaster_si_shobyo s
         LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = s.shobyomei_code
         WHERE s.edition=? AND s.shinryokoi_code=? AND s.henko_kubun NOT IN ('1','9')
-          AND s.shobyomei_code <> '0000000'
-        ORDER BY s.shobyomei_code`, [edition, ckEdition, code]);
+          AND s.shobyomei_code NOT IN (${SPECIAL_SHOBYO_CODES.map(() => "?").join(",")})
+        ORDER BY s.shobyomei_code`, [edition, ckEdition, code, ...SPECIAL_SHOBYO_CODES]);
     }
     return p;
   }
@@ -591,7 +724,13 @@ async function buildProfile(code, info, edition, ym, ms, me) {
     p.tekiouTotal = Number((await rows(`
       SELECT count(DISTINCT shobyomei_code) AS n FROM checkmaster_iy_tekio
       WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')
-        AND shobyomei_code <> '0000000'`, [ckEdition, code]))[0].n);
+        AND shobyomei_code NOT IN (${SPECIAL_SHOBYO_CODES.map(() => "?").join(",")})`,
+      [ckEdition, code, ...SPECIAL_SHOBYO_CODES]))[0].n);
+    p.tekiouHazure = Number((await rows(`
+      SELECT count(*) AS n FROM checkmaster_iy_tekio
+      WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')
+        AND shobyomei_code IN (${Object.keys(HAZURE_CODES).map(() => "?").join(",")})`,
+      [ckEdition, code, ...Object.keys(HAZURE_CODES)]))[0].n);
     p.tekiouMujoken = Number((await rows(`
       SELECT count(*) AS n FROM checkmaster_iy_tekio
       WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')
@@ -601,8 +740,8 @@ async function buildProfile(code, info, edition, ym, ms, me) {
       FROM checkmaster_iy_tekio t
       LEFT JOIN master_shobyomei b ON b.edition=? AND b.shobyomei_code = t.shobyomei_code
       WHERE t.edition=? AND t.iyakuhin_code=? AND t.henko_kubun NOT IN ('1','9')
-        AND t.shobyomei_code <> '0000000'
-      ORDER BY t.shobyomei_code`, [edition, ckEdition, code]);
+        AND t.shobyomei_code NOT IN (${SPECIAL_SHOBYO_CODES.map(() => "?").join(",")})
+      ORDER BY t.shobyomei_code`, [edition, ckEdition, code, ...SPECIAL_SHOBYO_CODES]);
     p.kinkiTotal = Number((await rows(`
       SELECT count(DISTINCT kinki_shobyomei_code) AS n FROM checkmaster_iy_shobyokinki
       WHERE edition=? AND iyakuhin_code=? AND henko_kubun NOT IN ('1','9')`,
@@ -664,11 +803,13 @@ async function renderCheck(R) {
   if (overDose.length) {
     banners.push("【投与量・日数上限超過の疑い】チェックマスタの上限値を超えています(機械判定・要原文確認):<br>" +
       overDose.map(([t, d]) => {
-        const scope = d.dc ? `傷病名 ${d.dc} 条件` : "病名条件なしチェック";
+        const scope = d.dc ? `傷病名 ${d.dc} ${d.dn ?? ""} 条件` : "病名条件なしチェック";
         const parts = [];
-        if (d.ryoOver) parts.push(`数量 ${d.ryo} > 上限 ${d.lr}` + (d.tekigi ? "(適宜増減の対象。原文確認)" : ""));
-        if (d.nissuOver) parts.push(`投与日数 ${d.nissu} > 上限 ${d.ln}日`);
-        return `・${esc(t.code)} ${esc(t.name ?? "")}(${esc(scope)}): ${esc(parts.join("、"))}`;
+        if (d.ryoOver) parts.push(`数量 ${fmtInput(d.ryo)} > 最大投与量 ${fmtAmount(d.lr)}`
+          + (d.tekigi ? "(適宜増減の対象。原文確認)" : ""));
+        if (d.nissuOver) parts.push(`投与日数 ${fmtInput(d.nissu)} > 最長投与日数 ${fmtAmount(d.ln)}日`);
+        return `・${esc(t.code)} ${esc(t.name ?? "")}(${esc(scope)}): ${esc(parts.join("、"))}` +
+          `/参照範囲=${esc(sanshoHaniLabel(d.sansho))}`;
       }).join("<br>"));
   }
 
@@ -696,6 +837,8 @@ async function renderCheck(R) {
       out.push(`      下限年齢=${esc(i.kagen)}/上限年齢=${esc(i.jogen)}(特殊値は仕様説明書参照)`);
     if (i.shisetsu.length) out.push(`      施設基準コード=${esc(i.shisetsu.join(","))}(届出要否は施設基準告示・届出コード一覧で確認)`);
   }
+
+  renderJogen(out, R);
 
   if (R.commentYoken.length) {
     out.push("", "--- 選択式コメント(摘要欄記載事項・記載要領 別表Ⅰ〜Ⅲ) ---");
@@ -743,6 +886,7 @@ async function renderCheck(R) {
     }
   }
   if (R.drugs.length || R.diseases.length) {
+    blank(out);
     if (!ckEdition) {
       out.push("--- 適応病名チェック(チェックマスタ) ---", "  チェックマスタ未投入", "");
     } else {
@@ -771,34 +915,12 @@ async function renderCheck(R) {
           out.push(`    × ${esc(u.code)} ${esc(u.name ?? "(名称不明)")}: チェックマスタ上の適応傷病名に収載なし(適応外の確定ではない。添付文書・審査情報を確認)`);
         }
         if (t.mujoken) out.push(`    (参考: 傷病名を条件としない投与量・日数チェック行が ${t.mujoken} 行あり)`);
-        for (const d of t.dose) {
-          const scope = d.dc ? `傷病名${d.dc}条件` : "病名条件なし";
-          const limits = [];
-          if (d.lr) limits.push(`最大投与量=${d.lr}` + (d.tekigi ? "(適宜増減)" : ""));
-          if (d.ln) limits.push(`最長投与日数=${d.ln}日`);
-          const verdicts = [];
-          if (d.ryoOver !== null) verdicts.push(`数量${d.ryo}→` + (d.ryoOver ? "上限超過【要確認】" : "上限内"));
-          if (d.nissuOver !== null) verdicts.push(`日数${d.nissu}→` + (d.nissuOver ? "上限超過【要確認】" : "上限内"));
-          const tail = verdicts.length ? ` / 入力照合: ${verdicts.join("、")}` : "(数量・日数を入力すると照合します)";
-          out.push(`    投与量・日数(${esc(scope)}): ${esc(limits.join("、"))}${esc(tail)}`);
-        }
-        for (const g of t.groups) out.push(`    (参考)投与量グループ: ${esc(g.group_mei)} 規格値=${esc(g.kikaku_chi)} 上限(規格)=${esc(g.seigen_saidai_toyoryo_kikaku)} 対象フラグ=${esc(g.check_taisho_flag)} ※同成分合算のグループ判定は未実装`);
-        for (const g of t.manzen) out.push(`    (参考)漫然投与グループ: ${esc(g.group_mei)} 漫然投与日数=${esc(g.manzen_toyo_nissu)} リセット日数=${esc(g.manzen_reset_nissu)} 係数=${esc(g.manzen_keisu)} ※複数月縦覧の判定は未実装`);
+        if (t.dose.length || t.doseRef.length)
+          out.push(`    投与量・投与日数の上限は「${esc(JOGEN_TITLE)}」欄に表示`);
       }
       out.push("  ※チェックマスタは公開日時点の内容であり、以降の改定・新薬収載を反映していない可能性があります", "");
     }
   }
-  if (R.kaisu.length) {
-    out.push("--- 算定回数(参考表示) ---");
-    for (const k of R.kaisu) {
-      const units = k.rows.map((r) =>
-        `${r.santei_tani_meisho}(${r.santei_tani_code})につき${r.santei_kaisu}回まで` +
-        (r.tokurei_joken === "1" ? "【特例条件=1: 要通知確認】" : "")).join("、");
-      out.push(`  ${esc(k.code)} ${esc(k.name)}: ${esc(units)}`);
-    }
-    out.push("");
-  }
-
   // 関連情報(区分番号+名称で照合)
   const gigiLines = [], shinsaLines = [];
   const seenKeys = new Set();
@@ -872,7 +994,141 @@ async function renderCheck(R) {
       "原文の確認を省略しないでください。", "");
   }
   out.push("--- 注意(固定表示) ---", esc(UNLISTED_RULES_NOTE));
-  return {banners, html: out.join("\n")};
+  return {banners, limits: jogenTable(R), html: out.join("\n")};
+}
+
+/* 空行が連続しないよう、直前が空行でないときだけ1行あける(report.blank の移植) */
+function blank(out) {
+  if (out.length && out[out.length - 1] !== "") out.push("");
+}
+
+/* 上限1件分の表示(report.dose_lines の移植)。「上限がいくつで、どの条件の
+   ときに、入力値がそれを超えるか」を先頭行で読み切れるようにする。 */
+function doseTaisho(d) {
+  if (d.scope === "mujoken") return "病名条件なし(当該医薬品の全ての傷病名に共通)";
+  if (d.scope === "match") return `入力の傷病名 ${d.dc} ${d.dn ?? "(名称不明)"} に該当`;
+  if (d.scope === "hazure") return d.dn ?? `傷病名コード${d.dc}`;
+  const rei = d.examples.map(([c, n]) => `${c} ${n ?? "(名称不明)"}`).join("、");
+  return `他の適応傷病名 ${d.n}件` + (rei ? `(例: ${rei})` : "")
+    + (d.jokenAri ? "/性別・年齢の条件付き行を含む" : "");
+}
+function doseLimitText(d) {
+  const limits = [];
+  if (d.lr) limits.push(`最大投与量 ${fmtAmount(d.lr)}` + (d.tekigi ? "(適宜増減の対象)" : ""));
+  if (d.ln) limits.push(`最長投与日数 ${fmtAmount(d.ln)}日`);
+  return limits.join("、");
+}
+function doseJoken(d) {
+  const joken = [];
+  if (d.scope !== "other") {
+    if (d.seibetsu && d.seibetsu !== "0")
+      joken.push(`性別=${{"1": "男", "2": "女"}[d.seibetsu] ?? d.seibetsu}`);
+    const age = ageLabel(d.kagen, d.jogen);
+    if (age !== "年齢制限なし") joken.push(age);
+  }
+  if (d.checkKubun) joken.push(`チェック区分=${d.checkKubun}(${CHECK_KUBUN[d.checkKubun] ?? "不明"})`);
+  if (d.sansho) joken.push(`参照範囲=${sanshoHaniLabel(d.sansho)}`);
+  return joken.join("/");
+}
+function doseVerdict(d) {
+  if (!d.collated) {
+    return d.scope === "hazure"
+      ? "対象の診療識別(剤型)が入力から判別できないため入力照合の対象外"
+      : "患者の傷病名に該当する行のみ照合するため入力照合の対象外";
+  }
+  const verdicts = [];
+  if (d.ryoOver !== null)
+    verdicts.push(`数量 ${fmtInput(d.ryo)} → ` + (d.ryoOver ? "上限超過【要確認】" : "上限内"));
+  if (d.nissuOver !== null)
+    verdicts.push(`投与日数 ${fmtInput(d.nissu)} → ` + (d.nissuOver ? "上限超過【要確認】" : "上限内"));
+  return verdicts.length ? verdicts.join("、")
+    : "数量・投与日数の入力なし(入力欄に「コード=数量」を入れると照合します)";
+}
+
+function renderJogen(out, R) {
+  const drugs = R.tekiou.filter((t) => t.kind === "医薬品"
+    && (t.dose.length || t.doseRef.length || t.groups.length || t.manzen.length));
+  if (!drugs.length && !R.kaisu.length) return;
+  blank(out);
+  out.push(`--- ${esc(JOGEN_TITLE)} ---`);
+  for (const t of drugs) {
+    out.push(`  [医薬品] ${esc(t.code)} ${esc(t.name ?? "(名称不明)")}(根拠: ${esc(t.table)})`);
+    for (const d of [...t.dose, ...t.doseRef]) {
+      out.push(`    ${d.collated ? "[照合]" : "[参考]"} ${esc(doseLimitText(d))} …${esc(doseTaisho(d))}`);
+      const joken = doseJoken(d);
+      if (joken) out.push(`        条件: ${esc(joken)}`);
+      out.push(`        ${d.collated ? "入力照合: " : "※"}${esc(doseVerdict(d))}`);
+      out.push(`        生値: 最大投与量=${esc(d.lr ?? "99999.99999(対象外)")}` +
+        `/最長投与日数=${esc(d.ln ?? "999(対象外)")}`);
+    }
+    if (!t.dose.length && !t.doseRef.length)
+      out.push("    投与量・投与日数の上限はチェックマスタに収載なし(上限なしの確定ではない。添付文書・審査情報を確認)");
+    for (const g of t.groups)
+      out.push(`    [参考] 投与量グループ(同成分の合算): ${esc(g.group_mei)}` +
+        ` 含量単位=${esc(g.ganryo_tani || "(省略)")} 規格値=${esc(fmtAmount(g.kikaku_chi))}` +
+        ` グループ内の最大投与量=${esc(fmtAmount(g.seigen_saidai_toyoryo_kikaku))}` +
+        ` 対象フラグ=${esc(g.check_taisho_flag)} 参照範囲=${esc(g.sansho_hani ?? "")}` +
+        " ※同成分合算のグループ判定は未実装");
+    for (const g of t.manzen)
+      out.push(`    [参考] 漫然投与グループ: ${esc(g.group_mei)}` +
+        ` 漫然投与日数=${esc(fmtAmount(g.manzen_toyo_nissu))}` +
+        ` リセット日数=${esc(fmtAmount(g.manzen_reset_nissu))}` +
+        ` 係数=${esc(fmtAmount(g.manzen_keisu))} ※複数月縦覧の判定は未実装`);
+    out.push(`    ${esc(RYO_TANI_NOTE)}`);
+  }
+  for (const k of R.kaisu) {
+    out.push(`  [診療行為] ${esc(k.code)} ${esc(k.name)}(根拠: santei_kaisu(${esc(R.edition)}))`);
+    for (const r of k.rows)
+      out.push(`    [参考] 算定回数 ${esc(r.santei_kaisu)}回まで …${esc(r.santei_tani_meisho)}` +
+        `(算定単位コード${esc(r.santei_tani_code)})につき` +
+        (r.tokurei_joken === "1" ? "【特例条件=1: 要通知確認】" : ""));
+  }
+  out.push("  ※上限に達していないこと=算定・投与が認められることではありません" +
+    "(告示・留意事項通知の算定要件、傷病名・実施内容の妥当性は別途確認)");
+  blank(out);
+}
+
+/* 静的版だけの表示: 上限を一覧表にして冒頭に出す(本文のテキストは同じ内容を
+   根拠付きで残す)。判定は runCheck の結果をそのまま使う */
+function jogenTable(R) {
+  const trs = [];
+  let hasDose = false;
+  const cell = (d) => {
+    const v = doseVerdict(d);
+    if (!d.collated) return `<span class="muted">参考(照合対象外)</span>`;
+    if (d.ryoOver || d.nissuOver) return `<span class="over">${esc(v)}</span>`;
+    if (d.ryoOver === false || d.nissuOver === false) return `<span class="within">${esc(v)}</span>`;
+    return `<span class="muted">${esc(v)}</span>`;
+  };
+  for (const t of R.tekiou.filter((x) => x.kind === "医薬品")) {
+    for (const d of [...t.dose, ...t.doseRef]) {
+      hasDose = true;
+      trs.push(`<tr><td>${esc(t.code)}<br>${esc(t.name ?? "")}</td>
+        <td><b>${esc(doseLimitText(d))}</b></td>
+        <td>${esc(doseTaisho(d))}</td>
+        <td class="small">${esc(doseJoken(d))}</td>
+        <td>${cell(d)}</td></tr>`);
+    }
+  }
+  for (const k of R.kaisu) {
+    for (const r of k.rows) {
+      trs.push(`<tr><td>${esc(k.code)}<br>${esc(k.name)}</td>
+        <td><b>算定回数 ${esc(r.santei_kaisu)}回まで</b></td>
+        <td>${esc(r.santei_tani_meisho)}(算定単位コード${esc(r.santei_tani_code)})につき</td>
+        <td class="small">${r.tokurei_joken === "1"
+          ? '<span class="over">特例条件=1: 要通知確認</span>' : "特例条件=0"}</td>
+        <td><span class="muted">算定回数テーブルの上限(回数の照合は未実装)</span></td></tr>`);
+    }
+  }
+  if (!trs.length) return "";
+  return `<fieldset><legend>${esc(JOGEN_TITLE)}</legend>
+    <div class="scroll"><table class="results">
+    <tr><th>対象</th><th>上限</th><th>適用対象</th><th>条件</th><th>入力照合</th></tr>
+    ${trs.join("")}</table></div>
+    <p class="small">${hasDose ? esc(RYO_TANI_NOTE) + "<br>" : ""}
+    ※上限に達していないこと=算定・投与が認められることではありません
+    (告示・留意事項通知の算定要件、傷病名・実施内容の妥当性は別途確認)。
+    根拠テーブル・該当行の生値は下の判定結果に表示しています。</p></fieldset>`;
 }
 
 function renderProfile(out, R) {
@@ -882,13 +1138,17 @@ function renderProfile(out, R) {
     if (p.tekiouTotal) {
       out.push(`  収載 ${p.tekiouTotal}件(性別・年齢・入外等の条件付きを含む):`);
       for (const e of p.tekiouExamples) out.push(`    - ${esc(e.code)} ${esc(e.name ?? "(名称不明)")}`);
-    } else if (p.tekiouMujoken) {
-      out.push(`  傷病名を条件としない行のみ収載(${p.tekiouMujoken}行・投与量/日数チェック用) → 傷病名別の適応一覧は収載なし`);
+    } else if (p.tekiouMujoken || p.tekiouHazure) {
+      out.push(`  傷病名を条件としない行・外れ値の行のみ収載(病名条件なし${p.tekiouMujoken}行・外れ値${p.tekiouHazure}行・いずれも数量/日数チェック用) → 傷病名別の適応一覧は収載なし`);
     } else {
       out.push("  チェックマスタに収載なし → 適応判定不能(不明)");
     }
+    if (p.tekiouHazure && p.tekiouTotal) {
+      out.push(`  (外れ値1〜3の数量チェック行が ${p.tekiouHazure} 行あり。傷病名ではないため上の一覧には含めていません → 上限は「${esc(JOGEN_TITLE)}」欄に表示)`);
+    }
   };
-  out.push("", `--- 単体プロファイル: ${esc(p.code)} ${esc(info.name ?? "")} ---`);
+  blank(out);
+  out.push(`--- 単体プロファイル: ${esc(p.code)} ${esc(info.name ?? "")} ---`);
   if (p.kind === "診療行為") {
     out.push("■ 背反相手(このコードと併算定調整があるテーブル収載分):");
     if (p.haihanAite.length) {
@@ -1071,13 +1331,16 @@ function parseKv(text) {
 async function onRunCheck() {
   const codes = $("codes").value.trim().split(/[\s,、]+/).filter(Boolean).map(toHw);
   if (!codes.length) { $("checkResult").innerHTML = '<p class="error">コードを入力してください</p>'; return; }
-  $("checkBanners").innerHTML = ""; $("checkResult").innerHTML = "<p>判定中…</p>";
+  $("checkBanners").innerHTML = ""; $("checkLimits").innerHTML = "";
+  $("checkResult").innerHTML = "<p>判定中…</p>";
   try {
     const R = await runCheck(codes, $("ym").value, parseKv($("ryo").value), parseKv($("nissu").value));
-    const {banners, html} = await renderCheck(R);
+    const {banners, limits, html} = await renderCheck(R);
     $("checkBanners").innerHTML = banners.map((b) => `<div class="warn">${b}</div>`).join("");
+    $("checkLimits").innerHTML = limits;
     $("checkResult").innerHTML = `<pre>${html}</pre>`;
   } catch (e) {
+    $("checkLimits").innerHTML = "";
     $("checkResult").innerHTML = `<p class="error">エラー: ${esc(e.message)}</p>`;
   }
 }

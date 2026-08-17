@@ -31,6 +31,19 @@
    font-size: .95rem; text-align: left; }
  table.results th { background: #f0f0f0; }
  .expired { color: #c00; font-weight: bold; }
+ /* 使用上限の一覧表(#checkLimits) */
+ .scroll { overflow-x: auto; }
+ table.results td.small, p.small { font-size: .85rem; color: #444; }
+ .over { color: #c00; font-weight: bold; }
+ .within { color: #060; font-weight: bold; }
+ .muted { color: #666; }
+ #checkLimits fieldset { background: #fbfbff; }
+ #checkLimits legend { font-weight: bold; }
+ #checkLimits table { min-width: 58rem; }
+ #checkLimits td:nth-child(1) { width: 11rem; }
+ #checkLimits td:nth-child(2) { width: 11rem; white-space: nowrap; font-size: 1rem; }
+ #checkLimits td:nth-child(4) { width: 17rem; }
+ #checkLimits td:nth-child(5) { width: 9rem; }
  .tab { display: none; }
  .tab.active { display: block; }
  a.reflink { color: #06c; cursor: pointer; text-decoration: underline; }
@@ -75,6 +88,7 @@
   <button id="runCheck">一次判定を実行</button>
   </fieldset>
   <div id="checkBanners"></div>
+  <div id="checkLimits"></div>
   <div id="checkResult"></div>
 </div>
 
